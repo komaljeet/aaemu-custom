@@ -108,8 +108,10 @@ mod tests {
         // Minimal config with only the fields this module reads. Tests that
         // touch other modules would build a fuller Config.
         let raw = std::fs::read_to_string("config.toml").unwrap_or_else(|_| {
-            // Fallback if cwd isn't the crate root during testing.
-            include_str!("../config.toml").to_string()
+            // Fallback if config.toml isn't present (it's gitignored) or cwd
+            // isn't the crate root during testing. config.example.toml is the
+            // tracked template with every field, so it parses identically.
+            include_str!("../config.example.toml").to_string()
         });
         toml::from_str(&raw).unwrap()
     }
