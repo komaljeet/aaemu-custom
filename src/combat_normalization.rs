@@ -31,23 +31,43 @@ pub fn compute_damage_taken(defense_power: i64, incoming_damage: i64) -> i64 {
 // ---------------------------------------------------------------------------
 
 /// Damage dealt by `attacker_id` for a skill with `base_skill_damage`.
+///
+/// Returns `None` when `attacker_id` has no `character_combat_stats` row yet
+/// (unseeded). The HTTP layer serializes `None` as `null` so the C# caller can
+/// fall back to its native calculation rather than silently treating an
+/// unseeded attacker as "0 Attack Power" (which would strip their scaling).
 pub async fn calculate_damage(
     pool: &MySqlPool,
     attacker_id: i64,
     base_skill_damage: i64,
-) -> Result<i64> {
-    let (ap, _) = get_combat_stats(pool, attacker_id).await?;
-    Ok(compute_damage(ap, base_skill_damage))
+) -> Result<Option<i64>> {
+    let row = sqlx::query("SELECT attack_power FROM character_combat_stats WHERE character_id = ?")
+        .bind(attacker_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+    let ap: i64 = row.try_get("attack_power")?;
+    Ok(Some(compute_damage(ap, base_skill_damage)))
 }
 
 /// Damage taken by `defender_id` from `incoming_damage`.
+///
+/// Returns `None` when `defender_id` has no `character_combat_stats` row yet
+/// (unseeded). The HTTP layer serializes `None` as `null` so the C# caller
+/// falls back to native armor mitigation — without this, an unseeded defender
+/// (DP = 0) would take full damage, regressing them versus native behavior.
 pub async fn calculate_damage_taken(
     pool: &MySqlPool,
     defender_id: i64,
     incoming_damage: i64,
-) -> Result<i64> {
-    let (_, dp) = get_combat_stats(pool, defender_id).await?;
-    Ok(compute_damage_taken(dp, incoming_damage))
+) -> Result<Option<i64>> {
+    let row = sqlx::query("SELECT defense_power FROM character_combat_stats WHERE character_id = ?")
+        .bind(defender_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+    let dp: i64 = row.try_get("defense_power")?;
+    Ok(Some(compute_damage_taken(dp, incoming_damage)))
 }
 
 /// `(attack_power, defense_power)` for a character. Defaults to `(0, 0)` if no

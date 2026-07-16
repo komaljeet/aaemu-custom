@@ -19,15 +19,16 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 
 **Done (C# → sidecar):**
 - Character created → starter perks (`CharacterManager.Create`)
-- Gold rewards: fish, tradepack, coinpurse — closed-loop economy, labor-scaled, `can_mint`-checked
-- Labor spent → sidecar `total_labor_spent` (drives the gold multiplier) (`AccountManager.UpdateLabor`)
+- Gold rewards: fish, tradepack, coinpurse — closed-loop economy, labor-scaled, `can_mint`-checked. **Units:** sidecar works in gold; AAEmu wallet/mail is copper (1g = 10000c). Fish, tradepack-gold, and boss-gold hooks ×10000 on award. Coinpurse is a unit-agnostic scalar (copper in → copper out, no conversion).
+- Labor spent → sidecar `total_labor_spent` (drives the gold multiplier) (`AccountManager.UpdateLabor`). Notify-only `/labor/spent` (can't-fail) rather than `/labor/spend` (InsufficientLabor on unseeded accounts).
+- World boss killed → `OnBossKilledAsync(bossId, teamId, members)` from `Npc.DoDie` (boss-grade filter via `NpcGradeId` ∈ {BossA, BossB, BossC, BossS}); sidecar schedules respawn, mints/logs bank-funded gold per member, rolls thunderstruck, returns per-member loot; C# mails each member their gold (×10000 → copper). Fire-and-forget via `Task.Run` + `BossLootDelivery` (mail works offline).
+- Combat damage → `CalculateDamageAsync` / `CalculateDamageTakenAsync` in `DamageEffect.Apply` (combat normalization, AP/DP formula). Replaces AAEmu's armor reduction for **seeded** defenders; unseeded defenders (and NPCs → all PvE) fall back to native. See the combat section below for the unseeded-signal contract.
 
 **Pending hooks (suggested order, highest economy value first):**
-1. **World boss killed** → `OnBossKilledAsync(bossId, raidId)` on a world-boss death filter, plus `GetBossesReadyToSpawnAsync` polled by a spawn tick. Sidecar already implements boss respawn timers + loot distribution.
-2. **Combat damage** → `CalculateDamageAsync` / `CalculateDamageTakenAsync` in the skill-effect damage calc (combat normalization, AP/DP formula). Note: damage effects are a deep, hot path — prefer an async-friendly insertion point or block with `.GetAwaiter().GetResult()` as the gold hooks do.
-3. **Honor** → `GrantEventHonorAsync` (honor events, ×10), `UseSkillPointTomeAsync` (skill-point-tome item use), `GetHonorShopPriceAsync` (honor shop purchase price override).
-4. **Mount / vehicle speed** → `GetMountSpeedAsync` / `GetVehicleSpeedAsync` in the mount/vehicle speed calc.
-5. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
+1. **Honor** → `GrantEventHonorAsync` (honor events, ×10), `UseSkillPointTomeAsync` (skill-point-tome item use), `GetHonorShopPriceAsync` (honor shop purchase price override).
+2. **Mount / vehicle speed** → `GetMountSpeedAsync` / `GetVehicleSpeedAsync` in the mount/vehicle speed calc.
+3. **Boss respawn poll** → `GetBossesReadyToSpawnAsync` polled by a spawn tick that calls `NpcManager.Create` at the recorded boss location. Sidecar already schedules the respawn; AAEmu just needs to spawn ready bosses (needs boss-location tracking + native-spawner coordination).
+4. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
 
 **Conventions for adding a hook** (use the done hooks as templates):
 - **Value-returning hooks in sync C# hot paths:** block on `.GetAwaiter().GetResult()` and fall back to the native value when the sidecar returns `-1`. Safe — AAEmu has no `SynchronizationContext` and the sidecar is local (<10ms; a down sidecar fails the TCP connection instantly). See `DoodadFuncBuyFish`, `SpecialtyManager.SellSpecialty`, `LootPack.GiveLootPack`.
@@ -39,8 +40,8 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
   `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`
 
 **Repos & branches:**
-- C# server: `komaljeet/AAEmu`, branch `feature/aaemu-custom-integration`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
-- Rust sidecar: `komaljeet/aaemu-custom`, branch `main` (direct-push workflow). Run with `cargo run --release`; serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax).
+- C# server: `komaljeet/AAEmu`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
+- Rust sidecar: `komaljeet/aaemu-custom`, PR target `main`. Run with `cargo run --release`; serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax). See `README.md` "Run (end-to-end)" for the full bootstrap (config → `--init-db` → run).
 - Shared MySQL `aaemu_game` DB; sidecar tables applied via `schema.sql` or `POST /init-db`.
 
 ## Setup
@@ -140,9 +141,16 @@ If `members` is empty, the sidecar falls back to its `raid_members` table. The r
 ### combat_normalization
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| POST | `/combat/damage` | `{attacker_id, base_skill_damage}` | `{attacker_id, damage}` |
-| POST | `/combat/damage-taken` | `{defender_id, incoming_damage}` | `{defender_id, damage_taken}` |
-| GET  | `/combat/stats/:character_id` | – | `{character_id, attack_power, defense_power}` |
+| POST | `/combat/damage` | `{attacker_id, base_skill_damage}` | `{attacker_id, damage}` — `damage` is `null` when `attacker_id` has no `character_combat_stats` row (unseeded); the C# caller then keeps the unscaled base. |
+| POST | `/combat/damage-taken` | `{defender_id, incoming_damage}` | `{defender_id, damage_taken}` — `damage_taken` is `null` when `defender_id` is unseeded; the C# caller falls back to native armor mitigation. |
+| GET  | `/combat/stats/:character_id` | – | `{character_id, attack_power, defense_power}` (defaults to `0,0` if unseeded) |
+
+**Unseeded-signal contract:** the damage endpoints return `null` (not `0`) when a
+character has no `character_combat_stats` row. This is what lets the C# hook fall
+back to native for unseeded characters and NPCs (PvE) instead of stripping their
+mitigation. A seeded row with `attack_power=0` / `defense_power=0` is *not* null —
+it returns a real value (no AP bonus / full damage), which is the intended
+"opted-in but unmodified" state.
 
 ### vehicle / mount
 | Method | Path | Query | Returns |
@@ -177,8 +185,8 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Honor event reward | honor grant path | `GrantEventHonorAsync(accountId, baseHonor)` | pending |
 | Skill point tome used | item use handler | `UseSkillPointTomeAsync(accountId, charId)` | pending |
 | Honor shop purchase | shop purchase handler | `GetHonorShopPriceAsync(itemId)` | pending |
-| Skill damage dealt | skill effect damage calculation | `CalculateDamageAsync(attackerId, base)` | pending |
-| Damage received | defense/damage-taken calculation | `CalculateDamageTakenAsync(defenderId, incoming)` | pending |
+| Skill damage dealt | `DamageEffect.Apply()` (base = pre-reduction `finalDamage`) | `CalculateDamageAsync(attackerId, base)` | ✅ wired |
+| Damage received | `DamageEffect.Apply()` (defender DP reduce; replaces native armor for seeded defenders) | `CalculateDamageTakenAsync(defenderId, incoming)` | ✅ wired |
 | Mount speed queried | mount speed calc | `GetMountSpeedAsync(mountId, buffs)` | pending |
 | Vehicle speed queried | vehicle speed calc | `GetVehicleSpeedAsync(vehicleId, buffs)` | pending |
 | Labor spent | `AccountManager.UpdateLabor()` (delta vs. last-known per account) | `RecordLaborSpentAsync(accountId, amount)` | ✅ wired |

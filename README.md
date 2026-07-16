@@ -54,23 +54,77 @@ cargo test
 cargo build --release
 ```
 
-## Run
-
-The binary needs the `aaemu_game` MySQL database (the same one the C# AAEmu
-server uses) with the custom tables applied:
+### Build in Docker (no local Rust toolchain needed)
 
 ```sh
-# 1. apply schema + bootstrap world bank + seed defaults
-mysql -u root -p aaemu_game < schema.sql
-#   or:  aaemu-custom --init-db
-
-# 2. run the scheduler (integrity / boss / labor / daily tax)
-cargo run --           # uses config.toml in cwd
-cargo run -- --config custom.toml
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v "$(pwd):/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target \
+  -w /app rust:1.88 cargo build --release
+# binary lands at target/release/aaemu-custom
 ```
 
-`config.toml` points at `mysql://root:password@127.0.0.1:3306/aaemu_game` —
-edit it (or the `[items]` IDs) to match your server.
+## Run (end-to-end)
+
+The sidecar shares the C# AAEmu server's `aaemu_game` MySQL database. It needs
+its own tables applied and a config file pointing at *your* MySQL credentials.
+
+### 1. Configure
+
+`config.toml` is gitignored (it holds DB credentials — this repo is public).
+Copy the template and edit the `[database]` connection to match your AAEmu
+MySQL user/password:
+
+```sh
+cp config.example.toml config.toml
+# then edit config.toml -> [database] connection = "mysql://<user>:<pass>@127.0.0.1:3306/aaemu_game"
+```
+
+### 2. One-time DB bootstrap
+
+Apply the schema, initialize the world bank to `total_gold_cap`, and seed
+vehicle/mount defaults:
+
+```sh
+./target/release/aaemu-custom --init-db
+#   or, from source:  cargo run --release -- --init-db
+#   or, raw SQL:      mysql -u root -p aaemu_game < schema.sql
+```
+
+### 3. Run the sidecar
+
+Starts the HTTP API on `127.0.0.1:1281` plus the scheduler loops (hourly
+integrity, per-minute boss spawn tick, labor regen, daily tax):
+
+```sh
+./target/release/aaemu-custom
+#   or:  cargo run --release
+#   or:  cargo run -- --config path/to/custom.toml
+```
+
+### 4. Enable the AAEmu side
+
+Add the `AaemuCustom` block to AAEmu's `Config.Local.json` (gitignored, per-server):
+
+```json
+"AaemuCustom": { "Enabled": true, "BaseUrl": "http://127.0.0.1:1281" }
+```
+
+With `Enabled: false` (or the sidecar down), every hook in the C# server is a
+no-op and native gameplay runs unchanged — so the sidecar can be enabled or
+disabled at any time without restarting the economy.
+
+### Caveats
+
+- **Labor shadow is lazy-seeded.** The sidecar learns about an account only when
+  AAEmu first notifies a labor *spend*. Until then the account has no row and a
+  1× gold multiplier. This is the intended fresh-start behavior.
+- **Combat normalization is opt-in per character.** A character must have a row
+  in `character_combat_stats` for the AP/DP model to apply; otherwise that hit
+  falls back to AAEmu's native damage calc. NPCs are never seeded, so PvE always
+  uses native damage.
+- **Boss respawn is scheduled, not spawned.** The sidecar records a ready-to-spawn
+  boss and exposes `/boss/ready`, but AAEmu does not yet poll it to create the
+  NPC — killed bosses won't reappear via the sidecar until that wiring lands.
 
 ## Closed-loop economy invariant
 

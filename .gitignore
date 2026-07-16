@@ -2,3 +2,5 @@
 /Cargo.lock
 *.log
 .env
+# Real config holds DB credentials — copy from config.example.toml and edit.
+/config.toml
