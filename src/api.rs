@@ -188,6 +188,16 @@ async fn labor_spend(State(st): State<AppState>, Json(b): Json<SpendBody>) -> Ap
     Ok(json!({"account_id": b.account_id, "pool": pool}).into())
 }
 
+/// Notify-only labor spend: advances `total_labor_spent` (and thus the gold
+/// multiplier) without the sidecar's own pool having to cover it. Used by the
+/// C# server's `AccountManager.UpdateLabor` hook.
+async fn labor_spent(State(st): State<AppState>, Json(b): Json<SpendBody>) -> ApiResult {
+    let total = labor::record_labor_spent(&st.pool, b.account_id, b.amount)
+        .await
+        .map_err(map_err)?;
+    Ok(json!({"account_id": b.account_id, "total_spent": total}).into())
+}
+
 async fn labor_get(State(st): State<AppState>, Path(account_id): Path<i64>) -> ApiResult {
     let pool = labor::get_labor(&st.pool, account_id).await.map_err(map_err)?;
     Ok(json!({"account_id": account_id, "pool": pool}).into())
@@ -330,6 +340,7 @@ pub fn router(state: AppState) -> Router {
         // labor
         .route("/labor/tick/:account_id", post(labor_tick))
         .route("/labor/spend", post(labor_spend))
+        .route("/labor/spent", post(labor_spent))
         .route("/labor/:account_id", get(labor_get))
         // gold_scaling
         .route("/gold/multiplier/:account_id", get(gold_multiplier))

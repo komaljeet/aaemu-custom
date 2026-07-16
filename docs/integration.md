@@ -53,7 +53,13 @@ Base URL default: `http://127.0.0.1:1281`. JSON bodies use snake_case keys.
 |--------|------|------|---------|
 | POST | `/labor/tick/:account_id` | – | `{account_id, pool}` |
 | POST | `/labor/spend` | `{account_id, amount}` | `{account_id, pool}` |
+| POST | `/labor/spent` | `{account_id, amount}` | `{account_id, total_spent}` |
 | GET  | `/labor/:account_id` | – | `{account_id, pool}` |
+
+`/labor/spend` checks the sidecar's own pool and errors `InsufficientLabor` on an
+unseeded account. `/labor/spent` is **notify-only**: it creates the row if needed and
+just increments `total_labor_spent` (clamping the pool at 0), so it never fails — this
+is the one the C# server uses to advance the gold multiplier.
 
 ### gold_scaling
 | Method | Path | Body | Returns |
@@ -128,7 +134,7 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Damage received | defense/damage-taken calculation | `CalculateDamageTakenAsync(defenderId, incoming)` | pending |
 | Mount speed queried | mount speed calc | `GetMountSpeedAsync(mountId, buffs)` | pending |
 | Vehicle speed queried | vehicle speed calc | `GetVehicleSpeedAsync(vehicleId, buffs)` | pending |
-| Labor spent | labor spend calls | `SpendLaborAsync(accountId, amount)` | pending |
+| Labor spent | `AccountManager.UpdateLabor()` (delta vs. last-known per account) | `RecordLaborSpentAsync(accountId, amount)` | ✅ wired |
 | Account flagged for RMT | gold transfer audit | `FlagRmtSuspectAsync(accountId)` | pending |
 
 ### Hooking pattern (example)
@@ -182,6 +188,33 @@ and the reward pauses (per spec).
   with `applyCoinpurseScaling: true`. The scaling is applied only on that path, so
   ordinary mob/fishing coin drops through `GiveLootPack` are untouched. `coinCount`
   (the loot pack's native coin drop) is passed as `base_gold` to the sidecar.
+
+### Labor spend hook
+
+The gold multiplier is driven by `total_labor_spent`, so labor spend has to be reported
+to the sidecar for the multiplier to move. AAEmu's native labor is **per-account** (the
+`Character.LaborPower` doc calls it "Cached representation of Account Labor"; every
+change writes `accounts.labor` via `AccountManager.UpdateLabor`), which maps 1:1 onto
+the sidecar's per-`account_id` model — no aggregation across characters is needed.
+
+The hook lives in **`AccountManager.UpdateLabor(accountId, laborPower)`** — the single
+funnel every labor mutation flows through (skill spend, the `ConsumeLaborPower` special
+effect, specialty turn-in, auction-mail copper, the `RecoverExpEffect` direct-setter
+bypass, the `TimedRewardsManager` online regen tick, and offline accrual on login). A
+`ConcurrentDictionary<accountId, lastLabor>` derives the delta on each call; a **negative
+delta** (labor consumed) is fire-and-forget reported via `RecordLaborSpentAsync` →
+`POST /labor/spent`. Regen (positive delta) and the first sighting of an account just set
+the baseline and are not reported, so login/offline-accrual never falsely counts as spend.
+AAEmu stays authoritative for gameplay labor gating; the sidecar only tracks the economy
+side. The notify endpoint (`/labor/spent`) is can't-fail by design (creates the row,
+clamps the pool at 0) — the authoritative `/labor/spend` is left for a future
+sidecar-authoritative-labor mode.
+
+**Existing characters (fresh start):** the sidecar has no historical labor data and AAEmu
+has no cumulative-labor-spent stat to back-fill from (`consumed_lp` is persisted but never
+incremented in code), so **every account — existing and new — starts at
+`total_labor_spent = 0` → 1× gold multiplier** and climbs as labor is spent from now on.
+Native gameplay labor (current `accounts.labor`, gating, regen) is untouched.
 
 ## Scheduler (sidecar-internal)
 

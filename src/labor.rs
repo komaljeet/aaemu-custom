@@ -119,6 +119,46 @@ pub async fn get_labor(pool: &MySqlPool, account_id: i64) -> Result<i64> {
     Ok(row.map(|r| r.try_get::<i64, _>("pool").unwrap_or(0)).unwrap_or(0))
 }
 
+/// Record that `amount` labor was spent by an account — notify-only, used by the
+/// C# server to advance the gold multiplier (which is driven by `total_labor_spent`).
+///
+/// Unlike `spend_labor`, this never fails on an unseeded account: it creates the row
+/// if needed (pool 0) and just increments `total_labor_spent`, clamping the sidecar's
+/// own `pool` at 0 so it can still regen internally. AAEmu remains authoritative for
+/// gameplay labor gating; this only tracks the economy side. Returns the new
+/// `total_labor_spent`.
+pub async fn record_labor_spent(pool: &MySqlPool, account_id: i64, amount: i64) -> Result<i64> {
+    if amount <= 0 {
+        return Err(Error::Other("record_labor_spent amount must be positive".into()));
+    }
+    let now = chrono::Utc::now().naive_utc();
+    sqlx::query(
+        "INSERT IGNORE INTO account_labor (account_id, pool, last_regen_tick, total_labor_spent) \
+         VALUES (?, 0, ?, 0)",
+    )
+    .bind(account_id)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "UPDATE account_labor \
+         SET pool = GREATEST(0, pool - ?), total_labor_spent = total_labor_spent + ? \
+         WHERE account_id = ?",
+    )
+    .bind(amount)
+    .bind(amount)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+
+    let row = sqlx::query("SELECT total_labor_spent FROM account_labor WHERE account_id = ?")
+        .bind(account_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.try_get("total_labor_spent")?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
