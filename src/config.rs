@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    pub api: ApiConfig,
     pub database: DatabaseConfig,
     pub economy: EconomyConfig,
     pub labor: LaborConfig,
@@ -14,6 +15,11 @@ pub struct Config {
     pub gold_scaling: GoldScalingConfig,
     pub mounts: MountConfig,
     pub items: ItemConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiConfig {
+    pub listen: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

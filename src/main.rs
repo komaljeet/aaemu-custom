@@ -8,12 +8,13 @@
 //!   aaemu-custom --schema Y.sql  schema file for --init-db (default schema.sql)
 
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use chrono::{Datelike, Local, Timelike};
 use sqlx::{MySqlPool, Row};
 use tracing::{error, info, warn};
 
-use aaemu_custom::{boss_respawn, config::Config, error::Result, labor, vehicle_mount_system, world_bank};
+use aaemu_custom::{api, boss_respawn, config::Config, error::Result, labor, vehicle_mount_system, world_bank};
 
 #[derive(Debug, Default)]
 struct Args {
@@ -105,6 +106,18 @@ async fn run_scheduler(pool: &MySqlPool, cfg: &Config) -> Result<()> {
         error!(error = %e, "startup integrity check failed");
     }
 
+    // HTTP API the C# AAEmu server calls.
+    let api_state = api::AppState {
+        pool: pool.clone(),
+        cfg: Arc::new(cfg.clone()),
+    };
+    let api_addr = cfg.api.listen.clone();
+    let api_task = tokio::spawn(async move {
+        if let Err(e) = api::serve(api_state, &api_addr).await {
+            error!(error = %e, "api server exited");
+        }
+    });
+
     let last_tax_day = AtomicI64::new(i64::MIN);
 
     // Hourly closed-loop integrity check.
@@ -181,6 +194,7 @@ async fn run_scheduler(pool: &MySqlPool, cfg: &Config) -> Result<()> {
     info!("scheduler running — press Ctrl+C to shut down");
     tokio::signal::ctrl_c().await.ok();
     info!("Ctrl+C received — shutting down");
+    api_task.abort();
     integrity.abort();
     boss.abort();
     labor_tick.abort();

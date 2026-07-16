@@ -9,6 +9,7 @@
 //! Pure calculation logic is split into `*_raw` helpers so it can be unit
 //! tested without a live database.
 
+pub mod api;
 pub mod boss_respawn;
 pub mod combat_normalization;
 pub mod config;

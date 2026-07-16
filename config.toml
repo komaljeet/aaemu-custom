@@ -2,6 +2,11 @@
 # All values are consumed by the Rust modules. Override per-environment by
 # editing this file or pointing the binary at another one with --config.
 
+[api]
+# Address the sidecar HTTP API listens on (the C# AAEmu server calls this).
+# Avoid 1280 — that's the AAEmu game server's own WebApi.
+listen = "127.0.0.1:1281"
+
 [database]
 # Connection string used by sqlx. Use 127.0.0.1 since the C# AAEmu server and
 # this sidecar share the same host MySQL container.

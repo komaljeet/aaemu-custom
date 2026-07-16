@@ -1,6 +1,5 @@
 //! boss_respawn — 30-minute world boss respawn with killing-blow loot.
 
-use rand::Rng;
 use sqlx::{MySqlPool, Row};
 use tracing::{info, warn};
 
@@ -55,7 +54,6 @@ pub async fn distribute_boss_loot(
         return Ok(());
     }
 
-    let mut rng = rand::rng();
     for r in rows {
         let character_id: i64 = r.try_get("character_id")?;
         let account_id: i64 = r.try_get("account_id")?;
@@ -73,9 +71,11 @@ pub async fn distribute_boss_loot(
             warn!(boss_id, character_id, gold, "boss gold payout skipped — pool empty");
         }
 
-        let threshold: f64 =
-            rng.random_range(cfg.boss.thunderstruck_chance_min..=cfg.boss.thunderstruck_chance_max);
-        let roll: f64 = rng.random();
+        // Stateless OS-backed rolls so this future stays Send (held across awaits).
+        let lo = cfg.boss.thunderstruck_chance_min;
+        let hi = cfg.boss.thunderstruck_chance_max;
+        let threshold: f64 = lo + rand::random::<f64>() * (hi - lo);
+        let roll: f64 = rand::random();
         let thunderstruck = roll < threshold;
 
         sqlx::query(
