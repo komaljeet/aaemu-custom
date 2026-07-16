@@ -1,0 +1,11 @@
+/target
+.git
+.gitignore
+.dockerignore
+Dockerfile
+*.log
+.env
+config.toml
+config.docker.toml
+docs
+README.md

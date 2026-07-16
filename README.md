@@ -54,14 +54,17 @@ cargo test
 cargo build --release
 ```
 
-### Build in Docker (no local Rust toolchain needed)
+### Build a Docker image (recommended — no local Rust toolchain needed)
+
+A multi-stage `Dockerfile` builds a slim runtime image (rustls, so no OpenSSL;
+debian-slim base):
 
 ```sh
-MSYS_NO_PATHCONV=1 docker run --rm \
-  -v "$(pwd):/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target \
-  -w /app rust:1.88 cargo build --release
-# binary lands at target/release/aaemu-custom
+docker buildx build -t aaemu-custom:latest --load .
 ```
+
+The image does **not** bake in `config.toml` (it holds DB credentials) — mount
+it at run time (see below).
 
 ## Run (end-to-end)
 
@@ -79,15 +82,32 @@ cp config.example.toml config.toml
 # then edit config.toml -> [database] connection = "mysql://<user>:<pass>@127.0.0.1:3306/aaemu_game"
 ```
 
+**If running in Docker on Windows/macOS**, the container can't reach the host's
+`127.0.0.1` — use `host.docker.internal` for MySQL and bind the API to
+`0.0.0.0`. Make a docker-specific config (also gitignored):
+
+```sh
+cp config.example.toml config.docker.toml
+# edit config.docker.toml:
+#   [api]      listen = "0.0.0.0:1281"
+#   [database] connection = "mysql://<user>:<pass>@host.docker.internal:3306/aaemu_game"
+```
+
 ### 2. One-time DB bootstrap
 
 Apply the schema, initialize the world bank to `total_gold_cap`, and seed
 vehicle/mount defaults:
 
 ```sh
+# native binary
 ./target/release/aaemu-custom --init-db
-#   or, from source:  cargo run --release -- --init-db
-#   or, raw SQL:      mysql -u root -p aaemu_game < schema.sql
+#   or:  cargo run --release -- --init-db
+#   or:  mysql -u root -p aaemu_game < schema.sql
+
+# docker image (mounts config.docker.toml as /app/config.toml)
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/config.docker.toml:/app/config.toml:ro" \
+  aaemu-custom:latest --init-db --config config.toml
 ```
 
 ### 3. Run the sidecar
@@ -96,9 +116,18 @@ Starts the HTTP API on `127.0.0.1:1281` plus the scheduler loops (hourly
 integrity, per-minute boss spawn tick, labor regen, daily tax):
 
 ```sh
+# native
 ./target/release/aaemu-custom
 #   or:  cargo run --release
 #   or:  cargo run -- --config path/to/custom.toml
+
+# docker (publishes 1281 to the host; AAEmu reaches it at 127.0.0.1:1281)
+docker run -d --name aaemu-custom --restart unless-stopped \
+  -p 1281:1281 --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/config.docker.toml:/app/config.toml:ro" \
+  aaemu-custom:latest
+# logs:  docker logs -f aaemu-custom
+# stop:  docker rm -f aaemu-custom
 ```
 
 ### 4. Enable the AAEmu side

@@ -36,8 +36,7 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 - Add `using AAEmu.Game.Services.AaemuCustom;` at the call site.
 - Update the status column in the hook table below when a hook is wired.
 - Rebuild the C# server: `dotnet build` from `AAEmu.Game` (expect 0 errors).
-- Rebuild the sidecar (Rust isn't on the host; build in Docker):
-  `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`
+- Rebuild the sidecar (Rust isn't on the host): build a Docker image with `docker buildx build -t aaemu-custom:latest --load .` (multi-stage Dockerfile), then run/bootstrap via the image — see `README.md` "Run (end-to-end)". Quick compile check without an image: `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`.
 
 **Repos & branches:**
 - C# server: `komaljeet/AAEmu`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
