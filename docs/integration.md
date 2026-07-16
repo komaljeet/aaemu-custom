@@ -11,6 +11,38 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
                           └──────── shared MySQL (aaemu_game) ────────┘
 ```
 
+## Current progress & next steps
+
+> This is a handoff doc. The integration is incremental; each hook is wired on the C#
+> side only and is best-effort (native fallback when the sidecar is down). Per-hook
+> status is tracked in the table under [Hook points in AAEmu (C#)](#hook-points-in-aaemu-c).
+
+**Done (C# → sidecar):**
+- Character created → starter perks (`CharacterManager.Create`)
+- Gold rewards: fish, tradepack, coinpurse — closed-loop economy, labor-scaled, `can_mint`-checked
+- Labor spent → sidecar `total_labor_spent` (drives the gold multiplier) (`AccountManager.UpdateLabor`)
+
+**Pending hooks (suggested order, highest economy value first):**
+1. **World boss killed** → `OnBossKilledAsync(bossId, raidId)` on a world-boss death filter, plus `GetBossesReadyToSpawnAsync` polled by a spawn tick. Sidecar already implements boss respawn timers + loot distribution.
+2. **Combat damage** → `CalculateDamageAsync` / `CalculateDamageTakenAsync` in the skill-effect damage calc (combat normalization, AP/DP formula). Note: damage effects are a deep, hot path — prefer an async-friendly insertion point or block with `.GetAwaiter().GetResult()` as the gold hooks do.
+3. **Honor** → `GrantEventHonorAsync` (honor events, ×10), `UseSkillPointTomeAsync` (skill-point-tome item use), `GetHonorShopPriceAsync` (honor shop purchase price override).
+4. **Mount / vehicle speed** → `GetMountSpeedAsync` / `GetVehicleSpeedAsync` in the mount/vehicle speed calc.
+5. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
+
+**Conventions for adding a hook** (use the done hooks as templates):
+- **Value-returning hooks in sync C# hot paths:** block on `.GetAwaiter().GetResult()` and fall back to the native value when the sidecar returns `-1`. Safe — AAEmu has no `SynchronizationContext` and the sidecar is local (<10ms; a down sidecar fails the TCP connection instantly). See `DoodadFuncBuyFish`, `SpecialtyManager.SellSpecialty`, `LootPack.GiveLootPack`.
+- **Event-notify hooks (no return value needed):** fire-and-forget `_ = AaemuCustomClient.Instance.XxxAsync(...)`. See `CharacterManager.Create`, `AccountManager.UpdateLabor`.
+- Add `using AAEmu.Game.Services.AaemuCustom;` at the call site.
+- Update the status column in the hook table below when a hook is wired.
+- Rebuild the C# server: `dotnet build` from `AAEmu.Game` (expect 0 errors).
+- Rebuild the sidecar (Rust isn't on the host; build in Docker):
+  `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`
+
+**Repos & branches:**
+- C# server: `komaljeet/AAEmu`, branch `feature/aaemu-custom-integration`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
+- Rust sidecar: `komaljeet/aaemu-custom`, branch `main` (direct-push workflow). Run with `cargo run --release`; serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax).
+- Shared MySQL `aaemu_game` DB; sidecar tables applied via `schema.sql` or `POST /init-db`.
+
 ## Setup
 
 1. Apply the custom tables and bootstrap the economy:
