@@ -24,38 +24,42 @@ pub fn speed(base_speed: f32, speed_buffs: f32) -> f32 {
 // DB-bound public API
 // ---------------------------------------------------------------------------
 
-/// Speed for a vehicle (base from `vehicle_stats`, default cart speed if unknown).
+/// Speed for a vehicle. Returns `None` when `vehicle_id` has no `vehicle_stats`
+/// row (unseeded) so the C# caller falls back to the native model speed — the
+/// sidecar's flat defaults (e.g. cart 30 m/s) should not blanket-override every
+/// ship/vehicle just because the sidecar is enabled. Seed a row to opt a
+/// vehicle into the flat model.
 pub async fn get_vehicle_speed(
     pool: &MySqlPool,
-    cfg: &Config,
+    _cfg: &Config,
     vehicle_id: i64,
     speed_buffs: f32,
-) -> Result<f32> {
+) -> Result<Option<f32>> {
     let row = sqlx::query("SELECT base_speed FROM vehicle_stats WHERE vehicle_id = ?")
         .bind(vehicle_id)
         .fetch_optional(pool)
         .await?;
-    let base = row
-        .map(|r| r.try_get::<f32, _>("base_speed").unwrap_or(cfg.mounts.cart_speed))
-        .unwrap_or(cfg.mounts.cart_speed);
-    Ok(speed(base, speed_buffs))
+    let Some(row) = row else { return Ok(None) };
+    let base: f32 = row.try_get("base_speed")?;
+    Ok(Some(speed(base, speed_buffs)))
 }
 
-/// Speed for a mount (base from `mount_stats`, default mount speed if unknown).
+/// Speed for a mount. Returns `None` when `mount_id` has no `mount_stats` row
+/// (unseeded) so the C# caller falls back to native. Seed a row to opt a mount
+/// into the flat model.
 pub async fn get_mount_speed(
     pool: &MySqlPool,
-    cfg: &Config,
+    _cfg: &Config,
     mount_id: i64,
     speed_buffs: f32,
-) -> Result<f32> {
+) -> Result<Option<f32>> {
     let row = sqlx::query("SELECT base_speed FROM mount_stats WHERE mount_id = ?")
         .bind(mount_id)
         .fetch_optional(pool)
         .await?;
-    let base = row
-        .map(|r| r.try_get::<f32, _>("base_speed").unwrap_or(cfg.mounts.default_speed))
-        .unwrap_or(cfg.mounts.default_speed);
-    Ok(speed(base, speed_buffs))
+    let Some(row) = row else { return Ok(None) };
+    let base: f32 = row.try_get("base_speed")?;
+    Ok(Some(speed(base, speed_buffs)))
 }
 
 /// Reset every vehicle to the default cart speed with no fuel/grease requirement.
