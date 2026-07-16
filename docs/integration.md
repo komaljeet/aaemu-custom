@@ -117,9 +117,9 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Gameplay event | C# hook | Client call | Status |
 |----------------|---------|-------------|--------|
 | Character created | `CharacterManager.Create()` after `SaveDirectlyToDatabase()` | `GrantStarterPerksAsync(charId, accountId)` | ✅ wired |
-| Fish caught | fish catch / reward handler | `CalculateFishGoldAsync(accountId)` | pending |
-| Tradepack turned in | tradepack reward handler | `CalculateTradepackRewardAsync(accountId)` | pending |
-| Coinpurse opened | coinpurse loot handler | `CalculateCoinpurseGoldAsync(accountId, baseGold)` | pending |
+| Fish caught | `DoodadFuncBuyFish.Use()` (fish turn-in vendor) | `CalculateFishGoldAsync(accountId)` | ✅ wired |
+| Tradepack turned in | `SpecialtyManager.SellSpecialty()` before seller mail | `CalculateTradepackRewardAsync(accountId)` | ✅ wired |
+| Coinpurse opened | `GainLootPackItemEffect.Apply()` → `LootPack.GiveLootPack(applyCoinpurseScaling:)` | `CalculateCoinpurseGoldAsync(accountId, baseGold)` | ✅ wired |
 | World boss killed | NPC death handler (world boss filter) | `OnBossKilledAsync(bossId, raidId)` | pending |
 | Honor event reward | honor grant path | `GrantEventHonorAsync(accountId, baseHonor)` | pending |
 | Skill point tome used | item use handler | `UseSkillPointTomeAsync(accountId, charId)` | pending |
@@ -155,6 +155,33 @@ var dmg = await AaemuCustomClient.Instance.CalculateDamageAsync(attackerId, base
 if (dmg < 0)
     dmg = NativeCalculateDamage(attackerId, baseDamage); // AAEmu's own formula
 ```
+
+### Gold reward hooks (fish / tradepack / coinpurse)
+
+These three hooks are wired into **synchronous** C# hot paths, so they block on the
+sidecar call with `.GetAwaiter().GetResult()`. This is safe because AAEmu runs as a
+console host with no `SynchronizationContext` (no deadlock risk), the sidecar is local
+(replies in <10ms), and a down sidecar fails the TCP connection instantly rather than
+waiting on the 5s HTTP timeout. Every hook falls back to AAEmu's native payout when the
+sidecar returns its `-1` failure sentinel; a `0` result means the world pool can't mint
+and the reward pauses (per spec).
+
+- **Fish** — `DoodadFuncBuyFish.Use()`. The sidecar amount is awarded once via
+  `AddMoney` (the canonical wallet path). The native fallback preserves AAEmu's original
+  `Money += refund; AddMoney(refund)` lines verbatim.
+- **Tradepack** — `SpecialtyManager.SellSpecialty()`, before the seller mail is built.
+  Native specialty turn-ins deliver *either* gold *or* gilda depending on the NPC's
+  `SpecialtyCoinId` (0 = gold, non-zero = a gilda-style item). The hook maps onto that:
+  gold-delivery NPCs pay `sidecar.gold` (100g × labor multiplier); gilda-delivery NPCs
+  pay `sidecar.gilda` (10 flat, never scaled). The reward is paid flat to the seller
+  (no crafter split) when the sidecar is active. If you want *every* tradepack to pay
+  **both** 100g **and** 10 gilda regardless of NPC, that needs a known gilda item
+  template id to attach as an extra item — not currently wired.
+- **Coinpurse** — detected in `GainLootPackItemEffect.Apply()` by the source item's name
+  containing "coinpurse" (Jester's / Prince's / Queen's), then `GiveLootPack` is called
+  with `applyCoinpurseScaling: true`. The scaling is applied only on that path, so
+  ordinary mob/fishing coin drops through `GiveLootPack` are untouched. `coinCount`
+  (the loot pack's native coin drop) is passed as `base_gold` to the sidecar.
 
 ## Scheduler (sidecar-internal)
 
