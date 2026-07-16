@@ -1,0 +1,30 @@
+[package]
+name = "aaemu-custom"
+version = "0.1.0"
+edition = "2021"
+description = "Custom game server systems for an ArcheAge 1.2 private server emulator"
+license = "MIT"
+publish = false
+
+[lib]
+name = "aaemu_custom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aaemu-custom"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["mysql", "runtime-tokio-rustls", "chrono", "macros"] }
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.9"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

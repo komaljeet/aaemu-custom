@@ -1,0 +1,57 @@
+# aaemu-custom configuration
+# All values are consumed by the Rust modules. Override per-environment by
+# editing this file or pointing the binary at another one with --config.
+
+[database]
+# Connection string used by sqlx. Use 127.0.0.1 since the C# AAEmu server and
+# this sidecar share the same host MySQL container.
+connection = "mysql://root:password@127.0.0.1:3306/aaemu_game"
+
+[economy]
+# Absolute ceiling on world gold. circulating + pool must always equal this.
+total_gold_cap = 1000000000
+# Cron-style schedule for the daily tax run (SS MM HH DD MM DW). Default: 03:00 daily.
+tax_run_schedule = "0 0 3 * * *"
+# Large transfer threshold used by flag_rmt_suspect (gold).
+rmt_large_transfer_threshold = 50000
+# Account younger than this (days) receiving a large transfer is flagged.
+rmt_new_account_days = 7
+# > this many large transfers in 1 hour is flagged.
+rmt_burst_transfers = 3
+
+[labor]
+regen_interval_seconds = 300
+regen_per_tick = 100
+max_pool = 50000
+
+[boss]
+respawn_duration_seconds = 1800
+# Per-member base gold payout (scaled by labor multiplier), drawn from the world bank pool.
+gold_base_per_member = 100
+# Thunderstruck drop chance range per member.
+thunderstruck_chance_min = 0.20
+thunderstruck_chance_max = 0.30
+
+[honor]
+multiplier = 10
+shop_price_divisor = 2
+skill_tome_cost = 1000
+skill_tome_skill_points = 1
+
+[gold_scaling]
+fish_base = 50
+tradepack_gold_base = 100
+tradepack_gilda = 10
+coinpurse_flat_multiplier = 20
+labor_spent_for_max = 230000
+max_multiplier = 4.0
+
+[mounts]
+default_speed = 21.0
+dragon_speed = 30.0
+cart_speed = 30.0
+
+[items]
+# TODO: set to real ArcheAge 1.2 item IDs once confirmed from client data.
+dragon_mount_item_id = 0
+blue_hauler_item_id = 0
