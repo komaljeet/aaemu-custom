@@ -23,9 +23,11 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 - Labor spent → sidecar `total_labor_spent` (drives the gold multiplier) (`AccountManager.UpdateLabor`). Notify-only `/labor/spent` (can't-fail) rather than `/labor/spend` (InsufficientLabor on unseeded accounts).
 - World boss killed → `OnBossKilledAsync(bossId, teamId, members)` from `Npc.DoDie` (boss-grade filter via `NpcGradeId` ∈ {BossA, BossB, BossC, BossS}); sidecar schedules respawn, mints/logs bank-funded gold per member, rolls thunderstruck, returns per-member loot; C# mails each member their gold (×10000 → copper). Fire-and-forget via `Task.Run` + `BossLootDelivery` (mail works offline).
 - Combat damage → `CalculateDamageAsync` / `CalculateDamageTakenAsync` in `DamageEffect.Apply` (combat normalization, AP/DP formula). Replaces AAEmu's armor reduction for **seeded** defenders; unseeded defenders (and NPCs → all PvE) fall back to native. See the combat section below for the unseeded-signal contract.
+- Honor event grant → `GrantEventHonorAsync(accountId, amount)` in `GiveHonorPoint.Execute` (the `GiveHonorPoint` special effect — skill/item/quest honor). Sidecar scales by `honor.multiplier` (×10) and records in `account_honor`; falls back to native `HonorRate` on `-1`. Event path only — PvP honor (`AwardPvpHonor`) and the `ChangeGamePoints` funnel are untouched (the funnel also handles spends).
+- Honor shop price → `GetHonorShopPriceAsync(itemId)` in `CSBuyItemsPacket.Read` honor branch. Per item, uses the sidecar's `original_price / shop_price_divisor`; falls back to `template.HonorPrice` on `-1` (sidecar down or item not seeded in `honor_shop_prices`). The computed total still drives the affordability check and the spend.
 
 **Pending hooks (suggested order, highest economy value first):**
-1. **Honor** → `GrantEventHonorAsync` (honor events, ×10), `UseSkillPointTomeAsync` (skill-point-tome item use), `GetHonorShopPriceAsync` (honor shop purchase price override).
+1. **Skill Point Tome** → `UseSkillPointTomeAsync(accountId, charId)`. **Not a wire — a custom-feature build.** No native handler/item/`SpecialType` exists, and `CharacterSkills` derives available points from `GetSkillPointsForLevel(level)` only (no bonus-point grant API). Needs: a tome item id / trigger skill, a `BonusSkillPoints` grant mechanism on `CharacterSkills`, and a `SpecialEffectAction` calling the sidecar. Sidecar side is ready (`/honor/tome` deducts 1000 honor, grants 1 skill point into `character_skill_points`). Scope as a separate feature.
 2. **Mount / vehicle speed** → `GetMountSpeedAsync` / `GetVehicleSpeedAsync` in the mount/vehicle speed calc.
 3. **Boss respawn poll** → `GetBossesReadyToSpawnAsync` polled by a spawn tick that calls `NpcManager.Create` at the recorded boss location. Sidecar already schedules the respawn; AAEmu just needs to spawn ready bosses (needs boss-location tracking + native-spawner coordination).
 4. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
@@ -181,9 +183,9 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Tradepack turned in | `SpecialtyManager.SellSpecialty()` before seller mail | `CalculateTradepackRewardAsync(accountId)` | ✅ wired |
 | Coinpurse opened | `GainLootPackItemEffect.Apply()` → `LootPack.GiveLootPack(applyCoinpurseScaling:)` | `CalculateCoinpurseGoldAsync(accountId, baseGold)` | ✅ wired |
 | World boss killed | `Npc.DoDie()` (boss-grade filter via `NpcGradeId`; roster = `eligiblePlayers`) | `OnBossKilledAsync(bossId, raidId, members)` → mail gold | ✅ wired |
-| Honor event reward | honor grant path | `GrantEventHonorAsync(accountId, baseHonor)` | pending |
-| Skill point tome used | item use handler | `UseSkillPointTomeAsync(accountId, charId)` | pending |
-| Honor shop purchase | shop purchase handler | `GetHonorShopPriceAsync(itemId)` | pending |
+| Honor event reward | `GiveHonorPoint.Execute` (GiveHonorPoint special effect) | `GrantEventHonorAsync(accountId, baseHonor)` | ✅ wired |
+| Skill point tome used | item use handler (none yet — feature build) | `UseSkillPointTomeAsync(accountId, charId)` | pending (feature) |
+| Honor shop purchase | `CSBuyItemsPacket.Read` honor branch | `GetHonorShopPriceAsync(itemId)` | ✅ wired |
 | Skill damage dealt | `DamageEffect.Apply()` (base = pre-reduction `finalDamage`) | `CalculateDamageAsync(attackerId, base)` | ✅ wired |
 | Damage received | `DamageEffect.Apply()` (defender DP reduce; replaces native armor for seeded defenders) | `CalculateDamageTakenAsync(defenderId, incoming)` | ✅ wired |
 | Mount speed queried | mount speed calc | `GetMountSpeedAsync(mountId, buffs)` | pending |
