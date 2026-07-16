@@ -131,18 +131,18 @@ pub async fn get_bosses_ready_to_spawn(pool: &MySqlPool) -> Result<Vec<i64>> {
     Ok(out)
 }
 
-/// Minute scheduler tick — trigger spawns for ready bosses.
+/// Minute scheduler tick — observability only.
 ///
-/// TODO: the actual in-game spawn is performed by the game server; this only
-/// clears the timer and logs. Wire a spawn signal once the integration is built.
+/// The sidecar schedules and records respawn timers; the actual in-game spawn
+/// is performed by the game server, which polls `GET /boss/ready` and confirms
+/// via `POST /boss/spawned` (the respawn poll is not yet wired on the AAEmu
+/// side — see docs/integration.md). This tick must NOT clear `next_spawn_at`:
+/// doing so would erase the ready signal before the game server can poll it,
+/// making `/boss/ready` return empty. Until the poll is wired this is log-only.
 pub async fn tick_boss_spawns(pool: &MySqlPool) -> Result<usize> {
     let ready = get_bosses_ready_to_spawn(pool).await?;
     for boss_id in &ready {
-        info!(boss_id, "tick_boss_spawns: spawn ready — signalling game server");
-        sqlx::query("UPDATE boss_spawn_state SET next_spawn_at = NULL WHERE boss_id = ?")
-            .bind(boss_id)
-            .execute(pool)
-            .await?;
+        info!(boss_id, "tick_boss_spawns: boss ready — awaiting game-server respawn poll");
     }
     Ok(ready.len())
 }
