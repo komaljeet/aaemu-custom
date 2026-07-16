@@ -131,6 +131,21 @@ pub async fn get_bosses_ready_to_spawn(pool: &MySqlPool) -> Result<Vec<i64>> {
     Ok(out)
 }
 
+/// Clear the ready signal for bosses the game server has spawned. Called by the
+/// game server's respawn poll after it (re)spawns each ready boss, so a boss
+/// isn't re-reported as ready (and re-spawned) on the next poll. Idempotent.
+pub async fn mark_spawned(pool: &MySqlPool, boss_ids: &[i64]) -> Result<u64> {
+    let mut affected = 0u64;
+    for boss_id in boss_ids {
+        let res = sqlx::query("UPDATE boss_spawn_state SET next_spawn_at = NULL WHERE boss_id = ?")
+            .bind(boss_id)
+            .execute(pool)
+            .await?;
+        affected += res.rows_affected();
+    }
+    Ok(affected)
+}
+
 /// Minute scheduler tick — observability only.
 ///
 /// The sidecar schedules and records respawn timers; the actual in-game spawn
