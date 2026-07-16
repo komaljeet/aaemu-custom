@@ -2,3 +2,7 @@
 /Cargo.lock
 *.log
 .env
+# Real config holds DB credentials — copy from config.example.toml and edit.
+/config.toml
+# Docker run config (host.docker.internal for MySQL, 0.0.0.0 bind). Gitignored.
+/config.docker.toml
