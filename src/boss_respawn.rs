@@ -7,14 +7,26 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::{gold_scaling, world_bank};
 
+/// Per-member loot computed for a boss kill. Returned to the game server so it
+/// can deliver the gold in-game (the sidecar only mints/logs the economy side).
+#[derive(serde::Serialize)]
+pub struct MemberLoot {
+    pub character_id: i64,
+    pub gold: i64,
+    pub thunderstruck: bool,
+}
+
 /// Record a boss kill, schedule the next spawn, and distribute loot to the
-/// killing raid.
+/// killing raid. `members` is the raid roster at the moment of the kill
+/// (character_id, account_id); if empty, falls back to the `raid_members`
+/// table. Returns the per-member loot so the caller can deliver it in-game.
 pub async fn on_boss_killed(
     pool: &MySqlPool,
     cfg: &Config,
     boss_id: i64,
     killing_raid_id: i64,
-) -> Result<()> {
+    members: &[(i64, i64)],
+) -> Result<Vec<MemberLoot>> {
     let now = chrono::Utc::now().naive_utc();
     let next = now + chrono::Duration::seconds(cfg.boss.respawn_duration_seconds);
     sqlx::query(
@@ -30,34 +42,43 @@ pub async fn on_boss_killed(
     .execute(pool)
     .await?;
     info!(boss_id, raid_id = killing_raid_id, next = ?next, "boss killed — respawn scheduled");
-    distribute_boss_loot(pool, cfg, boss_id, killing_raid_id).await
+    distribute_boss_loot(pool, cfg, boss_id, killing_raid_id, members).await
 }
 
 /// Distribute personal loot to every member of the killing raid:
 /// - gold from the world pool scaled by each member's labor multiplier
 /// - a 20–30% thunderstruck chance per member
+///
+/// `members` is the roster passed by the caller; if empty, the `raid_members`
+/// table is used (backward compat). Returns one `MemberLoot` per member.
 pub async fn distribute_boss_loot(
     pool: &MySqlPool,
     cfg: &Config,
     boss_id: i64,
     raid_id: i64,
-) -> Result<()> {
-    let rows = sqlx::query(
-        "SELECT character_id, account_id FROM raid_members WHERE raid_id = ?",
-    )
-    .bind(raid_id)
-    .fetch_all(pool)
-    .await?;
-
-    if rows.is_empty() {
-        warn!(boss_id, raid_id, "distribute_boss_loot: raid has no members on record");
-        return Ok(());
+    members: &[(i64, i64)],
+) -> Result<Vec<MemberLoot>> {
+    // Use the passed roster; fall back to the raid_members table if none provided.
+    let mut roster: Vec<(i64, i64)> = members.to_vec();
+    if roster.is_empty() {
+        let rows = sqlx::query(
+            "SELECT character_id, account_id FROM raid_members WHERE raid_id = ?",
+        )
+        .bind(raid_id)
+        .fetch_all(pool)
+        .await?;
+        for r in rows {
+            roster.push((r.try_get("character_id")?, r.try_get("account_id")?));
+        }
     }
 
-    for r in rows {
-        let character_id: i64 = r.try_get("character_id")?;
-        let account_id: i64 = r.try_get("account_id")?;
+    if roster.is_empty() {
+        warn!(boss_id, raid_id, "distribute_boss_loot: no members on record");
+        return Ok(Vec::new());
+    }
 
+    let mut out = Vec::with_capacity(roster.len());
+    for (character_id, account_id) in roster {
         let multiplier = gold_scaling::get_multiplier(pool, cfg, account_id).await?;
         let gold =
             ((cfg.boss.gold_base_per_member as f64) * multiplier).round() as i64;
@@ -91,8 +112,9 @@ pub async fn distribute_boss_loot(
         .await?;
 
         info!(boss_id, character_id, paid, thunderstruck, "boss loot distributed");
+        out.push(MemberLoot { character_id, gold: paid, thunderstruck });
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Bosses whose `next_spawn_at` has passed.

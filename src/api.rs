@@ -78,9 +78,17 @@ struct CoinpurseBody {
 }
 
 #[derive(Deserialize)]
+struct RaidMemberBody {
+    character_id: i64,
+    account_id: i64,
+}
+
+#[derive(Deserialize)]
 struct BossKillBody {
     boss_id: i64,
     raid_id: i64,
+    #[serde(default)]
+    members: Vec<RaidMemberBody>,
 }
 
 #[derive(Deserialize)]
@@ -246,10 +254,15 @@ async fn perks_flight(State(st): State<AppState>, Path(mount_id): Path<i64>) -> 
 }
 
 async fn boss_kill(State(st): State<AppState>, Json(b): Json<BossKillBody>) -> ApiResult {
-    boss_respawn::on_boss_killed(&st.pool, &st.cfg, b.boss_id, b.raid_id)
+    let members: Vec<(i64, i64)> = b
+        .members
+        .iter()
+        .map(|m| (m.character_id, m.account_id))
+        .collect();
+    let loot = boss_respawn::on_boss_killed(&st.pool, &st.cfg, b.boss_id, b.raid_id, &members)
         .await
         .map_err(map_err)?;
-    Ok(json!({"boss_id": b.boss_id, "raid_id": b.raid_id, "loot": "distributed"}).into())
+    Ok(json!({"boss_id": b.boss_id, "raid_id": b.raid_id, "loot": loot}).into())
 }
 
 async fn boss_ready(State(st): State<AppState>) -> ApiResult {
