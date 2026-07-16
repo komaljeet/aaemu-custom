@@ -92,6 +92,12 @@ struct BossKillBody {
 }
 
 #[derive(Deserialize)]
+struct BossSpawnedBody {
+    #[serde(default)]
+    boss_ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
 struct HonorEventBody {
     account_id: i64,
     base_honor: i64,
@@ -272,6 +278,13 @@ async fn boss_ready(State(st): State<AppState>) -> ApiResult {
     Ok(json!({"bosses": ids}).into())
 }
 
+async fn boss_spawned(State(st): State<AppState>, Json(b): Json<BossSpawnedBody>) -> ApiResult {
+    let cleared = boss_respawn::mark_spawned(&st.pool, &b.boss_ids)
+        .await
+        .map_err(map_err)?;
+    Ok(json!({"cleared": cleared}).into())
+}
+
 async fn honor_event(State(st): State<AppState>, Json(b): Json<HonorEventBody>) -> ApiResult {
     let h = honor::grant_event_honor(&st.pool, &st.cfg, b.account_id, b.base_honor)
         .await
@@ -366,6 +379,7 @@ pub fn router(state: AppState) -> Router {
         // boss_respawn
         .route("/boss/kill", post(boss_kill))
         .route("/boss/ready", get(boss_ready))
+        .route("/boss/spawned", post(boss_spawned))
         // honor
         .route("/honor/event", post(honor_event))
         .route("/honor/tome", post(honor_tome))
