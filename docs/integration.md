@@ -103,6 +103,14 @@ is the one the C# server uses to advance the gold multiplier.
 
 All rewards return `gold: 0` when the world pool can't mint (rewards pause).
 
+> **Units:** the sidecar works in **gold** (`fish_base=50`, `gold_base_per_member=100`,
+> `total_gold_cap=1_000_000_000`, `rmt_large_transfer_threshold=50000` are all gold).
+> AAEmu's wallet (`Money`, `AddMoney`, mail `AttachMoney`) is in **copper** (1g = 10000c;
+> see `AddGold.cs: argCopper + argSilver*100 + argGold*10000`). So the C# side must
+> **multiply sidecar gold by 10000** before adding to a wallet or attaching to mail.
+> Exception: `coinpurse_gold` is a unit-agnostic scalar — the C# side passes the native
+> copper coin drop as `base_gold` and awards the result directly as copper (no conversion).
+
 ### starter_perks
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
@@ -112,8 +120,15 @@ All rewards return `gold: 0` when the world pool can't mint (rewards pause).
 ### boss_respawn
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| POST | `/boss/kill` | `{boss_id, raid_id}` | `{boss_id, raid_id, loot}` |
+| POST | `/boss/kill` | `{boss_id, raid_id, members:[{character_id, account_id}]}` | `{boss_id, raid_id, loot:[{character_id, gold, thunderstruck}]}` |
 | GET  | `/boss/ready` | – | `{bosses:[ids]}` |
+
+`/boss/kill` is called by the C# server on a world-boss death with the killing raid's
+roster. The sidecar schedules the respawn (30 min, configurable), mints/logs bank-funded
+gold per member (base × labor multiplier, `can_mint`-checked), rolls thunderstruck, and
+**returns the per-member loot** so the C# server can deliver the gold in-game (by mail).
+If `members` is empty, the sidecar falls back to its `raid_members` table. The returned
+`gold` is in **gold units** — the C# server converts to copper (×10000) on delivery.
 
 ### honor
 | Method | Path | Body | Returns |
@@ -158,7 +173,7 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Fish caught | `DoodadFuncBuyFish.Use()` (fish turn-in vendor) | `CalculateFishGoldAsync(accountId)` | ✅ wired |
 | Tradepack turned in | `SpecialtyManager.SellSpecialty()` before seller mail | `CalculateTradepackRewardAsync(accountId)` | ✅ wired |
 | Coinpurse opened | `GainLootPackItemEffect.Apply()` → `LootPack.GiveLootPack(applyCoinpurseScaling:)` | `CalculateCoinpurseGoldAsync(accountId, baseGold)` | ✅ wired |
-| World boss killed | NPC death handler (world boss filter) | `OnBossKilledAsync(bossId, raidId)` | pending |
+| World boss killed | `Npc.DoDie()` (boss-grade filter via `NpcGradeId`; roster = `eligiblePlayers`) | `OnBossKilledAsync(bossId, raidId, members)` → mail gold | ✅ wired |
 | Honor event reward | honor grant path | `GrantEventHonorAsync(accountId, baseHonor)` | pending |
 | Skill point tome used | item use handler | `UseSkillPointTomeAsync(accountId, charId)` | pending |
 | Honor shop purchase | shop purchase handler | `GetHonorShopPriceAsync(itemId)` | pending |
