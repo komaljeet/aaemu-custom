@@ -25,12 +25,12 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 - Combat damage → `CalculateDamageAsync` / `CalculateDamageTakenAsync` in `DamageEffect.Apply` (combat normalization, AP/DP formula). Replaces AAEmu's armor reduction for **seeded** defenders; unseeded defenders (and NPCs → all PvE) fall back to native. See the combat section below for the unseeded-signal contract.
 - Honor event grant → `GrantEventHonorAsync(accountId, amount)` in `GiveHonorPoint.Execute` (the `GiveHonorPoint` special effect — skill/item/quest honor). Sidecar scales by `honor.multiplier` (×10) and records in `account_honor`; falls back to native `HonorRate` on `-1`. Event path only — PvP honor (`AwardPvpHonor`) and the `ChangeGamePoints` funnel are untouched (the funnel also handles spends).
 - Honor shop price → `GetHonorShopPriceAsync(itemId)` in `CSBuyItemsPacket.Read` honor branch. Per item, uses the sidecar's `original_price / shop_price_divisor`; falls back to `template.HonorPrice` on `-1` (sidecar down or item not seeded in `honor_shop_prices`). The computed total still drives the affordability check and the spend.
+- Ship base speed → `GetVehicleSpeedAsync(slaveTemplateId, 0)` in `ShipController.ApplyForceAndTorque`. Replaces `shipModel.Velocity` in the forward max-speed cap for ships seeded in `vehicle_stats`; AAEmu's `MoveSpeedMul` + wind physics still apply. **Cached per slave template id** (per-tick hot path): valid results for the process lifetime, failures 30s. Unseeded ships / sidecar down → native. **Mounts and wheeled vehicles are NOT wired** — they're client-authoritative in AAEmu (`CSMoveUnitPacket` only re-broadcasts movement; the server never computes their speed), so a server-side hook can't override their felt speed. The sidecar's flat model (mounts 21, dragons 30, carts 30) is only server-enforceable on ships.
 
 **Pending hooks (suggested order, highest economy value first):**
 1. **Skill Point Tome** → `UseSkillPointTomeAsync(accountId, charId)`. **Not a wire — a custom-feature build.** No native handler/item/`SpecialType` exists, and `CharacterSkills` derives available points from `GetSkillPointsForLevel(level)` only (no bonus-point grant API). Needs: a tome item id / trigger skill, a `BonusSkillPoints` grant mechanism on `CharacterSkills`, and a `SpecialEffectAction` calling the sidecar. Sidecar side is ready (`/honor/tome` deducts 1000 honor, grants 1 skill point into `character_skill_points`). Scope as a separate feature.
-2. **Mount / vehicle speed** → `GetMountSpeedAsync` / `GetVehicleSpeedAsync` in the mount/vehicle speed calc.
-3. **Boss respawn poll** → `GetBossesReadyToSpawnAsync` polled by a spawn tick that calls `NpcManager.Create` at the recorded boss location. Sidecar already schedules the respawn; AAEmu just needs to spawn ready bosses (needs boss-location tracking + native-spawner coordination).
-4. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
+2. **Boss respawn poll** → `GetBossesReadyToSpawnAsync` polled by a spawn tick that calls `NpcManager.Create` at the recorded boss location. Sidecar already schedules the respawn; AAEmu just needs to spawn ready bosses (needs boss-location tracking + native-spawner coordination).
+3. (Optional) **RMT flagging** → `FlagRmtSuspectAsync` at gold-transfer audit points.
 
 **Conventions for adding a hook** (use the done hooks as templates):
 - **Value-returning hooks in sync C# hot paths:** block on `.GetAwaiter().GetResult()` and fall back to the native value when the sidecar returns `-1`. Safe — AAEmu has no `SynchronizationContext` and the sidecar is local (<10ms; a down sidecar fails the TCP connection instantly). See `DoodadFuncBuyFish`, `SpecialtyManager.SellSpecialty`, `LootPack.GiveLootPack`.
@@ -156,8 +156,8 @@ it returns a real value (no AP bonus / full damage), which is the intended
 ### vehicle / mount
 | Method | Path | Query | Returns |
 |--------|------|-------|---------|
-| GET | `/vehicle/speed/:vehicle_id` | `?buffs=` | `{vehicle_id, speed}` |
-| GET | `/mount/speed/:mount_id` | `?buffs=` | `{mount_id, speed}` |
+| GET | `/vehicle/speed/:vehicle_id` | `?buffs=` | `{vehicle_id, speed}` — `speed` is `null` when `vehicle_id` has no `vehicle_stats` row (unseeded); the C# caller falls back to the native model speed. |
+| GET | `/mount/speed/:mount_id` | `?buffs=` | `{mount_id, speed}` — `null` when unseeded (same contract). **Not currently called from AAEmu** — mounts are client-authoritative (see ship hook notes). |
 
 ### misc
 | Method | Path | Returns |
@@ -188,8 +188,9 @@ Add `using AAEmu.Game.Services.AaemuCustom;` at any call site.
 | Honor shop purchase | `CSBuyItemsPacket.Read` honor branch | `GetHonorShopPriceAsync(itemId)` | ✅ wired |
 | Skill damage dealt | `DamageEffect.Apply()` (base = pre-reduction `finalDamage`) | `CalculateDamageAsync(attackerId, base)` | ✅ wired |
 | Damage received | `DamageEffect.Apply()` (defender DP reduce; replaces native armor for seeded defenders) | `CalculateDamageTakenAsync(defenderId, incoming)` | ✅ wired |
-| Mount speed queried | mount speed calc | `GetMountSpeedAsync(mountId, buffs)` | pending |
-| Vehicle speed queried | vehicle speed calc | `GetVehicleSpeedAsync(vehicleId, buffs)` | pending |
+| Mount speed queried | mount speed calc | `GetMountSpeedAsync(mountId, buffs)` | not server-enforceable (client-authoritative) |
+| Vehicle speed (ship) queried | `ShipController.ApplyForceAndTorque` (forward max-speed cap) | `GetVehicleSpeedAsync(slaveTemplateId, 0)` (cached per slave) | ✅ wired |
+| Vehicle speed (wheeled) queried | — | `GetVehicleSpeedAsync(vehicleId, buffs)` | not server-enforceable (client-authoritative) |
 | Labor spent | `AccountManager.UpdateLabor()` (delta vs. last-known per account) | `RecordLaborSpentAsync(accountId, amount)` | ✅ wired |
 | Account flagged for RMT | gold transfer audit | `FlagRmtSuspectAsync(accountId)` | pending |
 
