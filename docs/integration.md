@@ -47,10 +47,19 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 
 **Repos & branches:**
 - C# server: `komaljeet/AAEmu`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
-- Rust sidecar: `komaljeet/aaemu-custom`, PR target `main`. Run with `cargo run --release`; serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax). See `README.md` "Run (end-to-end)" for the full bootstrap (config → `--init-db` → run).
+- Rust sidecar: `komaljeet/aaemu-custom`, PR target `main`. Run with `cargo run --release` (dev), or as the `aaemu-custom:latest` Docker container that `Start-AAEmu.ps1` auto-starts alongside the rest of the stack (one-click); serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax). See `README.md` "Run (end-to-end)" for the full bootstrap (config → `--init-db` → run).
 - Shared MySQL `aaemu_game` DB; sidecar tables applied via `schema.sql` or `POST /init-db`.
 
 ## Setup
+
+> **Linux VPS deploy (one command):** the entire stack — MySQL, this sidecar, AAEmu Login, and
+> AAEmu Game — is defined in the repo-root `docker-compose.yaml` and brought up with
+> `docker compose up -d --build`. Config is injected via env vars (no `.server_files`, no `sed`);
+> the sidecar's `docker-entrypoint.sh` generates its `config.toml` from `config.example.toml` +
+> the `SIDECAR_DB_URL` / `SIDECAR_LISTEN` env vars. One-shot entry point: `bash deploy/deploy.sh`
+> (generates `.env` via `setup.sh`, sanity-checks the two gitignored client assets `game_pak` and
+> `compact.sqlite3` are staged, then runs `up -d --build`). Full runbook: `deploy/README.md`.
+> (The Windows dev path `Start-AAEmu.ps1` is unchanged.)
 
 1. Apply the custom tables and bootstrap the economy:
    ```sh
@@ -58,10 +67,26 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
    # or, while the sidecar is running:
    curl -X POST http://127.0.0.1:1281/init-db
    ```
-2. Run the sidecar (serves the API + the scheduler loops):
+2. Run the sidecar (serves the API + the scheduler loops). Two options:
+
+   **Containerized — started by `Start-AAEmu.ps1` (recommended).** The sidecar is
+   launched automatically as a detached Docker container (`aaemu-custom`, image
+   `aaemu-custom:latest`, port `1281`) right after MySQL is healthy, so
+   `.\Start-AAEmu.ps1` brings up **Docker → MySQL → sidecar → Login → Game** in one
+   go. Build the image once first (a release build takes several minutes and is
+   deliberately never run from inside the launch script):
    ```sh
-   cargo run --release
+   docker buildx build -t aaemu-custom:latest --load .\aaemu-custom
    ```
+   The container reads `aaemu-custom\config.docker.toml` (gitignored; listens on
+   `0.0.0.0:1281`, reaches MySQL via `host.docker.internal:3306`). `.\Stop-AAEmu.ps1`
+   stops it alongside the rest of the stack; the container is preserved and reused
+   on next start (the launch script reuses a running/stopped container rather than
+   recreating, and errors with the build command if the image is missing).
+
+   **Manual (dev).** `cargo run --release` from the sidecar dir (reads
+   `config.toml`, listens on `127.0.0.1:1281`). Use this when iterating on Rust
+   without rebuilding the image; stop the container first to free port 1281.
 3. Enable the integration on the C# side in `AAEmu.Game/Config.Local.json`:
    ```json
    "AaemuCustom": { "Enabled": true, "BaseUrl": "http://127.0.0.1:1281" }
@@ -70,6 +95,27 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
    best-effort: if `Enabled` is false or the sidecar is unreachable, every call
    is a no-op that logs a warning and returns a default. Gameplay is never
    blocked by the sidecar being down.
+
+## Troubleshooting
+
+- **`Start-AAEmu.ps1` aborts with `docker : WARNING: No blkio throttle.read_bps_device support`
+  (NativeCommandError) at the `Wait-Until { docker info ... }` line.** This is a PowerShell
+  stderr-handling quirk, not a Docker problem. `docker info` prints that `blkio` warning to
+  **stderr** on this host (a benign WSL2/cgroup note) *even when the engine is fully ready*.
+  The script sets `$ErrorActionPreference = 'Stop'`, under which PowerShell turns any
+  native-command stderr line into a **terminating** `NativeCommandError` — and `2>$null` alone
+  does **not** suppress that under `Stop`. Two call sites were affected: the initial readiness
+  check (wrapped in `try/catch`, so it silently reported "not ready" every run and re-launched
+  Docker Desktop even when it was already up) and the `Wait-Until` readiness loop (unwrapped,
+  so the throw escaped the scriptblock and aborted the script). The deeper bug: "did
+  `docker info` throw?" is the wrong readiness signal because the warning fires every run.
+  **Fix (applied):** a `Test-DockerReady` helper scopes `$ErrorActionPreference = 'Continue'`
+  to the call (so stderr can't throw), suppresses the noise with `2>$null`, and returns
+  `$LASTEXITCODE -eq 0` (the real readiness signal). Both call sites use it. **Residual risk:**
+  the later `docker compose up -d db`, `docker run`, and `docker start` calls also run under
+  `Stop` and rely on `$LASTEXITCODE`; if any emits a stderr warning (the same `blkio` note can
+  appear on `docker run`/`docker start`), they'll throw the same way before the exit-code check
+  runs. Apply the same `Continue`-scoped treatment if a later line throws.
 
 ## HTTP API contract
 
@@ -368,7 +414,8 @@ characters. Landed in AAEmu `develop` (PR #9, commit `9c47a070`).
   these overridden properties. NPC stat formulas are untouched.
 - **×20 exp** — `World.json` `ExpRate` 1.0 → 20.0 (applies to every `AddExp`).
   AAEmu loads `Config.json` → `Configurations/*.json` → `Config.Local.json`
-  (last wins); **no `Config.Local.json` exists on disk**, so 20.0 is active.
+  (last wins); `AAEmu.Game/Config.Local.json` exists but only sets `AaemuCustom`
+  (`Enabled` + `BaseUrl`) — it does **not** override `ExpRate`, so 20.0 is active.
 - **No party/raid exp reduction** — `Npc.DoDie` awards every eligible member (and
   their pet) the full kill XP; `plMod`/`mateMod` stay 1.0 regardless of group
   size. Literal × member-count was judged too extreme for 50-man raids.
