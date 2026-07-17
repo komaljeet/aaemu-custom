@@ -33,13 +33,17 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 **Pending hooks:**
 - None. All economy, labor, combat, honor, boss, skill-point, and transfer-audit hooks are wired. Optional future work: extend transfer logging to the trade window and COD/auction mail types; a sender-side earned-gold gate was considered and deferred (closed-loop supply control + admin visibility suffice for a private server; a gate would add friction for legit new players without stopping established sellers).
 
+**Beyond the hooks (recent work, no new sidecar call sites):**
+- Issue #14 — exp / level / stats / party overhaul. **AAEmu-only, no sidecar hook.** See [AAEmu gameplay overrides](#aaemu-gameplay-overrides-no-sidecar-hook).
+- Issue #13 — sidecar unit test suite (no runtime effect). See [Testing](#testing).
+
 **Conventions for adding a hook** (use the done hooks as templates):
 - **Value-returning hooks in sync C# hot paths:** block on `.GetAwaiter().GetResult()` and fall back to the native value when the sidecar returns `-1`. Safe — AAEmu has no `SynchronizationContext` and the sidecar is local (<10ms; a down sidecar fails the TCP connection instantly). See `DoodadFuncBuyFish`, `SpecialtyManager.SellSpecialty`, `LootPack.GiveLootPack`.
 - **Event-notify hooks (no return value needed):** fire-and-forget `_ = AaemuCustomClient.Instance.XxxAsync(...)`. See `CharacterManager.Create`, `AccountManager.UpdateLabor`.
 - Add `using AAEmu.Game.Services.AaemuCustom;` at the call site.
 - Update the status column in the hook table below when a hook is wired.
 - Rebuild the C# server: `dotnet build` from `AAEmu.Game` (expect 0 errors).
-- Rebuild the sidecar (Rust isn't on the host): build a Docker image with `docker buildx build -t aaemu-custom:latest --load .` (multi-stage Dockerfile), then run/bootstrap via the image — see `README.md` "Run (end-to-end)". Quick compile check without an image: `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`.
+- Rebuild the sidecar (Rust isn't on the host): build a Docker image with `docker buildx build -t aaemu-custom:latest --load .` (multi-stage Dockerfile), then run/bootstrap via the image — see `README.md` "Run (end-to-end)". Quick compile check without an image: `MSYS_NO_PATHCONV=1 docker run --rm -v "E:/ArcheAge/aaemu-custom:/app" -v aaemu-cargo-cache:/usr/local/cargo -v aaemu-target:/app/target -w /app rust:1.88 cargo build --release`. Run the no-DB unit tests the same way: swap in `cargo test --lib` (see [Testing](#testing)).
 
 **Repos & branches:**
 - C# server: `komaljeet/AAEmu`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
@@ -293,3 +297,87 @@ these:
 - **daily** wealth tax run (at the hour from `tax_run_schedule`)
 
 These keep the economy and timers consistent even if the C# server is idle.
+
+## Testing
+
+The sidecar has a no-DB unit test suite (`cargo test --lib`) covering every
+module's pure calculation helpers — the `*_raw` / pure functions split out
+specifically so they can be tested without a live MySQL pool. **44 tests** as of
+issue #13. The async `MySqlPool`-bound functions are thin SQL wrappers around
+these helpers and are intentionally not covered (an in-memory MySQL shim /
+testcontainers for those is a larger follow-up).
+
+Coverage by module:
+- `world_bank` — `can_mint_with`, `compute_tax` (incl. empty / custom /
+  open-ended tiers, negative balance), `default_tax_tiers` well-formedness,
+  `health_from_ratio` boundaries, `check_invariant`, `EconomyHealth::as_str`.
+- `gold_scaling` — `multiplier_from_labor` (linear, clamp, negative labor,
+  exact inflection), `fish_gold` / `tradepack_gold` / `coinpurse_gold`
+  (rounding, zero base).
+- `labor` — `regen_amount` (ticks, cap, zero/negative elapsed, zero interval,
+  partial-tick floor).
+- `combat_normalization` — `compute_damage` / `compute_damage_taken`
+  (AP/DP scaling, zero base/incoming, high-DP asymptote).
+- `honor` — `event_honor`, `shop_price` (extracted from `get_shop_price`;
+  divisor clamped to ≥1 so a misconfigured 0 can't divide-by-zero).
+- `boss_respawn` — `loot_gold_per_member`, `next_spawn_at`,
+  `thunderstruck_from_randoms` (all extracted from the async DB/RNG path so the
+  gold-rounding, respawn timing, and thunderstruck-chance math are testable
+  independent of the OS RNG and the database).
+- `vehicle_mount_system` — `speed` (additive buffs, negative/zero).
+- `config` — `config.example.toml` parses into the current `Config` struct with
+  one field per section spot-checked (guards struct/field drift on a fresh
+  clone; item ids are placeholder `0`, asserted `>= 0`).
+
+Run them (Rust isn't installed on the host — use the same `rust:1.88` image as
+the build):
+
+```sh
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v "E:/ArcheAge/aaemu-custom:/app" \
+  -v aaemu-cargo-registry:/usr/local/cargo/registry \
+  -v aaemu-target:/app/target \
+  -w /app rust:1.88 cargo test --lib
+```
+
+The cached volumes make reruns fast after the first dependency compile.
+`starter_perks` has no pure logic to test (pure `INSERT IGNORE` row-granting), so
+it has no unit tests by design.
+
+## AAEmu gameplay overrides (no sidecar hook)
+
+Issue #14 overhauled the exp / level / stat / party system entirely on the C#
+side — **none of this calls the sidecar** (no hook, no shared table). Recorded
+here so the next session doesn't re-derive it or get surprised by level-255
+characters. Landed in AAEmu `develop` (PR #9, commit `9c47a070`).
+
+- **No level limit** — `ExperienceManager.PlayerLevelCap` 55 → **255**. The 1.2
+  client encodes level as a single byte on the wire (`SCLevelChangedPacket`,
+  `SCUnitStatePacket`), so 255 is the hard ceiling — 999 is not reachable without
+  a client-protocol change. The shipped `levels` table only has real data to 55
+  (a 999,999,056-exp wall at 56, then 1-exp filler to 101) and `TotalExp` is
+  `int32`, so the steep stock curve can't extend past ~56.
+  `ExperienceManager.Load` keeps DB rows 1-55 and generates a fresh,
+  strictly-increasing, int32-safe curve for 56-255 (delta
+  `2,000,000 + 50,000 * (level - 56)`; total at 255 ≈ 1.57b). +1 skill point per
+  level past 55. Mates keep their stock 50 cap.
+- **Stats = level × stats** — the six primary stat getters in `Character`
+  (`Str`/`Dex`/`Sta`/`Int`/`Spi`/`Fai`) return `Level * 10` as the base instead
+  of the stock `unit_formula` curve; equipment flat adds and buff bonuses still
+  apply. Derived stats (`MaxHp`/`MaxMp`/…) auto-scale because their formulas read
+  these overridden properties. NPC stat formulas are untouched.
+- **×20 exp** — `World.json` `ExpRate` 1.0 → 20.0 (applies to every `AddExp`).
+  AAEmu loads `Config.json` → `Configurations/*.json` → `Config.Local.json`
+  (last wins); **no `Config.Local.json` exists on disk**, so 20.0 is active.
+- **No party/raid exp reduction** — `Npc.DoDie` awards every eligible member (and
+  their pet) the full kill XP; `plMod`/`mateMod` stay 1.0 regardless of group
+  size. Literal × member-count was judged too extreme for 50-man raids.
+- **Removed the ±10 level-difference gate** — the zero-XP hard gate and the
+  `levDif` scaling (which would go negative once the gate is gone) are removed,
+  so any eligible kill awards full XP regardless of the level gap (high-level
+  carry enabled).
+
+**No DB migration.** The 56-255 curve is generated in code at startup; stats
+recompute from level on the fly; no schema changes. Existing level-55 characters
+stay 55 and can now gain XP beyond 55. Rebuild + restart the AAEmu game server
+from `develop` to pick it up.
