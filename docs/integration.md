@@ -52,6 +52,15 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 
 ## Setup
 
+> **Linux VPS deploy (one command):** the entire stack — MySQL, this sidecar, AAEmu Login, and
+> AAEmu Game — is defined in the repo-root `docker-compose.yaml` and brought up with
+> `docker compose up -d --build`. Config is injected via env vars (no `.server_files`, no `sed`);
+> the sidecar's `docker-entrypoint.sh` generates its `config.toml` from `config.example.toml` +
+> the `SIDECAR_DB_URL` / `SIDECAR_LISTEN` env vars. One-shot entry point: `bash deploy/deploy.sh`
+> (generates `.env` via `setup.sh`, sanity-checks the two gitignored client assets `game_pak` and
+> `compact.sqlite3` are staged, then runs `up -d --build`). Full runbook: `deploy/README.md`.
+> (The Windows dev path `Start-AAEmu.ps1` is unchanged.)
+
 1. Apply the custom tables and bootstrap the economy:
    ```sh
    mysql -u root -p aaemu_game < schema.sql
@@ -86,6 +95,27 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
    best-effort: if `Enabled` is false or the sidecar is unreachable, every call
    is a no-op that logs a warning and returns a default. Gameplay is never
    blocked by the sidecar being down.
+
+## Troubleshooting
+
+- **`Start-AAEmu.ps1` aborts with `docker : WARNING: No blkio throttle.read_bps_device support`
+  (NativeCommandError) at the `Wait-Until { docker info ... }` line.** This is a PowerShell
+  stderr-handling quirk, not a Docker problem. `docker info` prints that `blkio` warning to
+  **stderr** on this host (a benign WSL2/cgroup note) *even when the engine is fully ready*.
+  The script sets `$ErrorActionPreference = 'Stop'`, under which PowerShell turns any
+  native-command stderr line into a **terminating** `NativeCommandError` — and `2>$null` alone
+  does **not** suppress that under `Stop`. Two call sites were affected: the initial readiness
+  check (wrapped in `try/catch`, so it silently reported "not ready" every run and re-launched
+  Docker Desktop even when it was already up) and the `Wait-Until` readiness loop (unwrapped,
+  so the throw escaped the scriptblock and aborted the script). The deeper bug: "did
+  `docker info` throw?" is the wrong readiness signal because the warning fires every run.
+  **Fix (applied):** a `Test-DockerReady` helper scopes `$ErrorActionPreference = 'Continue'`
+  to the call (so stderr can't throw), suppresses the noise with `2>$null`, and returns
+  `$LASTEXITCODE -eq 0` (the real readiness signal). Both call sites use it. **Residual risk:**
+  the later `docker compose up -d db`, `docker run`, and `docker start` calls also run under
+  `Stop` and rely on `$LASTEXITCODE`; if any emits a stderr warning (the same `blkio` note can
+  appear on `docker run`/`docker start`), they'll throw the same way before the exit-code check
+  runs. Apply the same `Continue`-scoped treatment if a later line throws.
 
 ## HTTP API contract
 
