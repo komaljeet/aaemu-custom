@@ -487,4 +487,75 @@ mod tests {
         assert!(check_invariant(300_000_000, 700_000_000, 1_000_000_000));
         assert!(!check_invariant(300_000_001, 700_000_000, 1_000_000_000));
     }
+
+    #[test]
+    fn economy_health_as_str_round_trips() {
+        assert_eq!(EconomyHealth::Healthy.as_str(), "healthy");
+        assert_eq!(EconomyHealth::Monitor.as_str(), "monitor");
+        assert_eq!(EconomyHealth::Warning.as_str(), "warning");
+        assert_eq!(EconomyHealth::Critical.as_str(), "critical");
+    }
+
+    #[test]
+    fn compute_tax_negative_and_zero_return_zero() {
+        let tiers = default_tax_tiers();
+        assert_eq!(compute_tax(-1, &tiers), 0);
+        assert_eq!(compute_tax(0, &tiers), 0);
+    }
+
+    #[test]
+    fn compute_tax_empty_tiers_return_zero() {
+        let tiers: Vec<TaxTier> = vec![];
+        assert_eq!(compute_tax(1_000_000, &tiers), 0);
+    }
+
+    #[test]
+    fn compute_tax_single_open_tier() {
+        // one 1% bracket from 1000 upward (open-ended).
+        let tiers = vec![TaxTier { min_gold: 1000, max_gold: None, rate_pct: 1.0 }];
+        assert_eq!(compute_tax(1000, &tiers), 0); // nothing above the floor
+        assert_eq!(compute_tax(2000, &tiers), 10); // 1000 * 0.01
+        assert_eq!(compute_tax(1_000_000, &tiers), 9_990); // 999_000 * 0.01
+    }
+
+    #[test]
+    fn default_tax_tiers_are_well_formed() {
+        let tiers = default_tax_tiers();
+        assert!(!tiers.is_empty());
+        // first bracket starts at 0 and is exempt.
+        assert_eq!(tiers[0].min_gold, 0);
+        assert_eq!(tiers[0].rate_pct, 0.0);
+        // tiers are sorted and non-overlapping (each min is past the prior max).
+        for w in tiers.windows(2) {
+            let prev_max = w[0]
+                .max_gold
+                .expect("only the last tier may be open-ended");
+            assert!(w[1].min_gold > prev_max, "tiers must not overlap");
+        }
+        // the final tier is open-ended.
+        assert!(tiers.last().unwrap().max_gold.is_none());
+    }
+
+    #[test]
+    fn health_from_ratio_edge_buckets() {
+        assert_eq!(health_from_ratio(0.0), EconomyHealth::Healthy);
+        // a negative ratio (more in the pool than total) still reads as healthy.
+        assert_eq!(health_from_ratio(-1.0), EconomyHealth::Healthy);
+    }
+
+    #[test]
+    fn invariant_edge_cases() {
+        assert!(check_invariant(0, 0, 0)); // empty economy is consistent
+        assert!(!check_invariant(1, 0, 0)); // gold from nowhere
+        assert!(check_invariant(500, 500, 1000));
+    }
+
+    #[test]
+    fn can_mint_edge_cases() {
+        // a non-positive amount is never mintable.
+        assert!(!can_mint_with(-1, 1_000_000_000));
+        // exact balance is mintable, one over is not.
+        assert!(can_mint_with(500, 500));
+        assert!(!can_mint_with(501, 500));
+    }
 }

@@ -1,5 +1,6 @@
 //! boss_respawn — 30-minute world boss respawn with killing-blow loot.
 
+use chrono::NaiveDateTime;
 use sqlx::{MySqlPool, Row};
 use tracing::{info, warn};
 
@@ -16,6 +17,35 @@ pub struct MemberLoot {
     pub thunderstruck: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Pure helpers (no DB) — unit tested
+// ---------------------------------------------------------------------------
+
+/// Per-member boss gold: the configured base scaled by the member's labor
+/// multiplier, rounded to the nearest gold.
+pub fn loot_gold_per_member(gold_base_per_member: i64, multiplier: f64) -> i64 {
+    ((gold_base_per_member as f64) * multiplier).round() as i64
+}
+
+/// When a boss killed at `now` should next be eligible to spawn.
+pub fn next_spawn_at(now: NaiveDateTime, duration_seconds: i64) -> NaiveDateTime {
+    now + chrono::Duration::seconds(duration_seconds)
+}
+
+/// Thunderstruck outcome from two independent uniform `[0,1)` draws: a threshold
+/// is picked uniformly in `[chance_min, chance_max]`, then the roll must land
+/// strictly below it. Extracted so the exact chance logic is unit-testable
+/// independent of the OS RNG.
+pub fn thunderstruck_from_randoms(
+    roll: f64,
+    threshold_rand: f64,
+    chance_min: f64,
+    chance_max: f64,
+) -> bool {
+    let threshold = chance_min + threshold_rand * (chance_max - chance_min);
+    roll < threshold
+}
+
 /// Record a boss kill, schedule the next spawn, and distribute loot to the
 /// killing raid. `members` is the raid roster at the moment of the kill
 /// (character_id, account_id); if empty, falls back to the `raid_members`
@@ -28,7 +58,7 @@ pub async fn on_boss_killed(
     members: &[(i64, i64)],
 ) -> Result<Vec<MemberLoot>> {
     let now = chrono::Utc::now().naive_utc();
-    let next = now + chrono::Duration::seconds(cfg.boss.respawn_duration_seconds);
+    let next = next_spawn_at(now, cfg.boss.respawn_duration_seconds);
     sqlx::query(
         "INSERT INTO boss_spawn_state (boss_id, last_killed_at, next_spawn_at, killed_by_raid_id) \
          VALUES (?, ?, ?, ?) \
@@ -80,8 +110,7 @@ pub async fn distribute_boss_loot(
     let mut out = Vec::with_capacity(roster.len());
     for (character_id, account_id) in roster {
         let multiplier = gold_scaling::get_multiplier(pool, cfg, account_id).await?;
-        let gold =
-            ((cfg.boss.gold_base_per_member as f64) * multiplier).round() as i64;
+        let gold = loot_gold_per_member(cfg.boss.gold_base_per_member, multiplier);
 
         let mut paid = 0i64;
         if gold > 0 && world_bank::can_mint_gold(pool, gold).await? {
@@ -92,12 +121,13 @@ pub async fn distribute_boss_loot(
             warn!(boss_id, character_id, gold, "boss gold payout skipped — pool empty");
         }
 
-        // Stateless OS-backed rolls so this future stays Send (held across awaits).
+        // Stateless OS-backed rolls so this future stays Send (held across
+        // awaits). The chance math lives in thunderstruck_from_randoms so it is
+        // unit-testable independent of the OS RNG.
         let lo = cfg.boss.thunderstruck_chance_min;
         let hi = cfg.boss.thunderstruck_chance_max;
-        let threshold: f64 = lo + rand::random::<f64>() * (hi - lo);
-        let roll: f64 = rand::random();
-        let thunderstruck = roll < threshold;
+        let thunderstruck =
+            thunderstruck_from_randoms(rand::random::<f64>(), rand::random::<f64>(), lo, hi);
 
         sqlx::query(
             "INSERT INTO boss_loot_log (boss_id, raid_id, character_id, gold, thunderstruck) \
@@ -164,7 +194,42 @@ pub async fn tick_boss_spawns(pool: &MySqlPool) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    // Boss logic is DB + RNG bound; the spawn-ready filter is a simple
-    // `next_spawn_at <= now` comparison covered by integration tests.
-    // get_mount_speed / get_vehicle_speed math is tested in vehicle_mount_system.
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn epoch() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn loot_gold_scales_and_rounds() {
+        assert_eq!(loot_gold_per_member(100, 1.0), 100);
+        assert_eq!(loot_gold_per_member(100, 2.5), 250);
+        // 10 * 2.25 = 22.5 -> rounds half away from zero to 23.
+        assert_eq!(loot_gold_per_member(10, 2.25), 23);
+        assert_eq!(loot_gold_per_member(0, 4.0), 0);
+    }
+
+    #[test]
+    fn next_spawn_advances_by_duration() {
+        let now = epoch();
+        assert_eq!(next_spawn_at(now, 1800), now + chrono::Duration::seconds(1800));
+        assert_eq!(next_spawn_at(now, 0), now);
+    }
+
+    #[test]
+    fn thunderstruck_threshold_spans_chance_range() {
+        // threshold_rand = 0 -> threshold = chance_min (0.20)
+        assert!(thunderstruck_from_randoms(0.10, 0.0, 0.20, 0.30));
+        assert!(!thunderstruck_from_randoms(0.20, 0.0, 0.20, 0.30));
+        // threshold_rand = 1 -> threshold = chance_max (0.30)
+        assert!(thunderstruck_from_randoms(0.29, 1.0, 0.20, 0.30));
+        assert!(!thunderstruck_from_randoms(0.30, 1.0, 0.20, 0.30));
+        // zero-width range collapses to the single chance value
+        assert!(thunderstruck_from_randoms(0.24, 0.5, 0.25, 0.25));
+        assert!(!thunderstruck_from_randoms(0.25, 0.5, 0.25, 0.25));
+    }
 }

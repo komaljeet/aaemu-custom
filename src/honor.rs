@@ -15,6 +15,13 @@ pub fn event_honor(base_honor: i64, multiplier: i64) -> i64 {
     base_honor * multiplier
 }
 
+/// Honor shop price: the original price divided by the configured divisor. The
+/// divisor is clamped to a minimum of 1 so a misconfigured 0 can never cause a
+/// divide-by-zero (the shop would just sell at full price instead).
+pub fn shop_price(original_price: i64, divisor: i64) -> i64 {
+    original_price / divisor.max(1)
+}
+
 // ---------------------------------------------------------------------------
 // DB-bound public API
 // ---------------------------------------------------------------------------
@@ -128,8 +135,7 @@ pub async fn get_shop_price(pool: &MySqlPool, cfg: &Config, item_id: i64) -> Res
         return Err(Error::NotFound(format!("honor_shop_prices item_id={item_id}")));
     };
     let original: i64 = row.try_get("original_price")?;
-    let divisor = cfg.honor.shop_price_divisor.max(1);
-    Ok(original / divisor)
+    Ok(shop_price(original, cfg.honor.shop_price_divisor))
 }
 
 #[cfg(test)]
@@ -141,5 +147,26 @@ mod tests {
         assert_eq!(event_honor(100, 10), 1000);
         assert_eq!(event_honor(0, 10), 0);
         assert_eq!(event_honor(7, 10), 70);
+    }
+
+    #[test]
+    fn event_honor_edge_cases() {
+        assert_eq!(event_honor(0, 0), 0);
+        // x1 multiplier is a pass-through.
+        assert_eq!(event_honor(7, 1), 7);
+        // A negative base passes through the multiplier unchanged (the helper is
+        // pure arithmetic; gating negative honor is the caller's job).
+        assert_eq!(event_honor(-5, 10), -50);
+    }
+
+    #[test]
+    fn shop_price_divides_and_guards_zero_divisor() {
+        assert_eq!(shop_price(1000, 4), 250);
+        assert_eq!(shop_price(1000, 1), 1000);
+        // divisor 0 is clamped to 1 -> full price, no panic.
+        assert_eq!(shop_price(1000, 0), 1000);
+        // integer division truncates toward zero.
+        assert_eq!(shop_price(999, 4), 249);
+        assert_eq!(shop_price(0, 4), 0);
     }
 }

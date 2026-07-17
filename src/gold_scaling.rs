@@ -154,4 +154,38 @@ mod tests {
         assert_eq!(tradepack_gold(4.0, 100), 400);
         assert_eq!(tradepack_gold(1.0, 100), 100);
     }
+
+    #[test]
+    fn multiplier_negative_labor_clamps_to_one() {
+        let c = cfg();
+        let eps = 1e-9;
+        // Negative labor (shouldn't happen, but a bad row could) must not pull
+        // the multiplier below 1.0.
+        assert!((multiplier_from_labor(-1, &c) - 1.0).abs() < eps);
+        assert!((multiplier_from_labor(-100_000, &c) - 1.0).abs() < eps);
+    }
+
+    #[test]
+    fn multiplier_at_exact_inflection_hits_cap() {
+        let c = cfg();
+        let eps = 1e-9;
+        // labor_spent_for_max is exactly the configured inflection point.
+        let at = c.gold_scaling.labor_spent_for_max;
+        assert!(
+            (multiplier_from_labor(at, &c) - c.gold_scaling.max_multiplier).abs() < eps
+        );
+    }
+
+    #[test]
+    fn fish_gold_rounds_half_away_from_zero() {
+        // 10 * 2.25 = 22.5 -> rounds to 23 (2.25 is exactly representable).
+        assert_eq!(fish_gold(2.25, 10), 23);
+        assert_eq!(fish_gold(1.0, 0), 0); // zero base
+    }
+
+    #[test]
+    fn coinpurse_and_tradepack_zero_base() {
+        assert_eq!(coinpurse_gold(4.0, 0, 20), 0);
+        assert_eq!(tradepack_gold(4.0, 0), 0);
+    }
 }
