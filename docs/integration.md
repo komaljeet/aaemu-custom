@@ -47,7 +47,7 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
 
 **Repos & branches:**
 - C# server: `komaljeet/AAEmu`, PR target `develop`. Per-server config in `AAEmu.Game/Config.Local.json` (gitignored) — `AaemuCustom.Enabled` + `BaseUrl`.
-- Rust sidecar: `komaljeet/aaemu-custom`, PR target `main`. Run with `cargo run --release`; serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax). See `README.md` "Run (end-to-end)" for the full bootstrap (config → `--init-db` → run).
+- Rust sidecar: `komaljeet/aaemu-custom`, PR target `main`. Run with `cargo run --release` (dev), or as the `aaemu-custom:latest` Docker container that `Start-AAEmu.ps1` auto-starts alongside the rest of the stack (one-click); serves the API on `127.0.0.1:1281` plus the scheduler loops (hourly integrity, per-minute boss tick, per-regen-interval labor, daily tax). See `README.md` "Run (end-to-end)" for the full bootstrap (config → `--init-db` → run).
 - Shared MySQL `aaemu_game` DB; sidecar tables applied via `schema.sql` or `POST /init-db`.
 
 ## Setup
@@ -58,10 +58,26 @@ and the closed-loop economy; the C# side owns the wire protocol and the world.
    # or, while the sidecar is running:
    curl -X POST http://127.0.0.1:1281/init-db
    ```
-2. Run the sidecar (serves the API + the scheduler loops):
+2. Run the sidecar (serves the API + the scheduler loops). Two options:
+
+   **Containerized — started by `Start-AAEmu.ps1` (recommended).** The sidecar is
+   launched automatically as a detached Docker container (`aaemu-custom`, image
+   `aaemu-custom:latest`, port `1281`) right after MySQL is healthy, so
+   `.\Start-AAEmu.ps1` brings up **Docker → MySQL → sidecar → Login → Game** in one
+   go. Build the image once first (a release build takes several minutes and is
+   deliberately never run from inside the launch script):
    ```sh
-   cargo run --release
+   docker buildx build -t aaemu-custom:latest --load .\aaemu-custom
    ```
+   The container reads `aaemu-custom\config.docker.toml` (gitignored; listens on
+   `0.0.0.0:1281`, reaches MySQL via `host.docker.internal:3306`). `.\Stop-AAEmu.ps1`
+   stops it alongside the rest of the stack; the container is preserved and reused
+   on next start (the launch script reuses a running/stopped container rather than
+   recreating, and errors with the build command if the image is missing).
+
+   **Manual (dev).** `cargo run --release` from the sidecar dir (reads
+   `config.toml`, listens on `127.0.0.1:1281`). Use this when iterating on Rust
+   without rebuilding the image; stop the container first to free port 1281.
 3. Enable the integration on the C# side in `AAEmu.Game/Config.Local.json`:
    ```json
    "AaemuCustom": { "Enabled": true, "BaseUrl": "http://127.0.0.1:1281" }
@@ -368,7 +384,8 @@ characters. Landed in AAEmu `develop` (PR #9, commit `9c47a070`).
   these overridden properties. NPC stat formulas are untouched.
 - **×20 exp** — `World.json` `ExpRate` 1.0 → 20.0 (applies to every `AddExp`).
   AAEmu loads `Config.json` → `Configurations/*.json` → `Config.Local.json`
-  (last wins); **no `Config.Local.json` exists on disk**, so 20.0 is active.
+  (last wins); `AAEmu.Game/Config.Local.json` exists but only sets `AaemuCustom`
+  (`Enabled` + `BaseUrl`) — it does **not** override `ExpRate`, so 20.0 is active.
 - **No party/raid exp reduction** — `Npc.DoDie` awards every eligible member (and
   their pet) the full kill XP; `plMod`/`mateMod` stay 1.0 regardless of group
   size. Literal × member-count was judged too extreme for 50-man raids.
