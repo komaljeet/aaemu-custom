@@ -106,4 +106,14 @@ mod tests {
         assert_eq!(speed(30.0, 0.0), 30.0); // dragon/cart, no buffs
         assert_eq!(speed(21.0, 9.0), 30.0); // mount with +9 buff == dragon base
     }
+
+    #[test]
+    fn speed_handles_negative_and_zero() {
+        // a slow-down buff subtracts from the base.
+        assert_eq!(speed(30.0, -5.0), 25.0);
+        assert_eq!(speed(21.0, -21.0), 0.0);
+        // zero base with a buff yields just the buff.
+        assert_eq!(speed(0.0, 5.0), 5.0);
+        assert_eq!(speed(0.0, 0.0), 0.0);
+    }
 }

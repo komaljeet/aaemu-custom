@@ -91,3 +91,31 @@ impl Config {
         Ok(cfg)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tracked `config.example.toml` must parse cleanly into the current
+    /// `Config` struct, so a freshly cloned repo boots without a local
+    /// `config.toml`. Spot-checking one field per section guards against
+    /// renamed/removed fields silently deserializing to defaults.
+    #[test]
+    fn example_config_parses_with_expected_values() {
+        let raw = include_str!("../config.example.toml");
+        let cfg: Config = toml::from_str(raw).expect("config.example.toml must parse");
+
+        assert!(!cfg.api.listen.is_empty());
+        assert!(!cfg.database.connection.is_empty());
+        assert!(cfg.economy.total_gold_cap > 0);
+        assert!(cfg.labor.max_pool > 0);
+        assert!(cfg.boss.respawn_duration_seconds > 0);
+        assert!(cfg.honor.multiplier > 0);
+        assert!(cfg.gold_scaling.max_multiplier >= 1.0);
+        assert!(cfg.mounts.default_speed > 0.0);
+        // item ids are placeholders (0) in the example until confirmed from
+        // client data, so only assert they're non-negative.
+        assert!(cfg.items.dragon_mount_item_id >= 0);
+        assert!(cfg.items.blue_hauler_item_id >= 0);
+    }
+}

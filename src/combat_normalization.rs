@@ -110,4 +110,17 @@ mod tests {
         // Very high DP approaches but never reaches full mitigation.
         assert!(compute_damage_taken(1_000_000, 1000) <= 5);
     }
+
+    #[test]
+    fn damage_zero_base_is_zero() {
+        // base skill damage 0 yields 0 regardless of Attack Power.
+        assert_eq!(compute_damage(1_000_000, 0), 0);
+        assert_eq!(compute_damage(0, 0), 0);
+    }
+
+    #[test]
+    fn damage_taken_zero_incoming_is_zero() {
+        assert_eq!(compute_damage_taken(5_000, 0), 0);
+        assert_eq!(compute_damage_taken(0, 0), 0);
+    }
 }

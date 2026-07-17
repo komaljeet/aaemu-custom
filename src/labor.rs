@@ -200,4 +200,29 @@ mod tests {
         assert_eq!(pool, 100);
         assert_eq!(ticks, 0);
     }
+
+    #[test]
+    fn regen_negative_elapsed_no_rollback() {
+        // now before last_tick (clock skew / reordered ticks) -> 0 ticks, pool
+        // unchanged. The helper clamps elapsed at 0 rather than regressing.
+        let (pool, ticks) = regen_amount(100, t(10), t(0), 300, 100, 50_000);
+        assert_eq!(pool, 100);
+        assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn regen_zero_interval_no_ticks() {
+        // a zero interval is guarded (no divide-by-zero) -> 0 ticks.
+        let (pool, ticks) = regen_amount(0, t(0), t(60), 0, 100, 50_000);
+        assert_eq!(pool, 0);
+        assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn regen_partial_tick_floors() {
+        // 7 minutes with a 5-minute interval = 1 tick (floor), not 2.
+        let (pool, ticks) = regen_amount(0, t(0), t(7), 300, 100, 50_000);
+        assert_eq!(ticks, 1);
+        assert_eq!(pool, 100);
+    }
 }
